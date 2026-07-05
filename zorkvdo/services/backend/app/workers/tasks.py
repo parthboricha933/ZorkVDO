@@ -1,0 +1,368 @@
+"""Celery tasks — the actual work the worker performs.
+
+Each task is exposed as both:
+  - A Celery task (decorated)         → for asynchronous dispatch
+  - An async function (undecorated)   → for inline / test invocation
+
+The decorated task wraps the async function via `_run_async`.
+"""
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from app.core.config import get_settings
+from app.core.logging import bind_task, configure_logging, get_logger
+from app.db import build_repositories
+from app.storage import build_storage
+from app.workers.celery_app import _run_async, celery_app
+from zorkvdo_ai import VideoAnalyzer
+from zorkvdo_ai.analysis import AnalyzerConfig
+
+log = get_logger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Analysis
+# ──────────────────────────────────────────────────────────────────────
+async def run_analysis_job(
+    job_id: str, video_id: str, owner_id: str, blueprint_name: str
+) -> dict:
+    """Run the full video analysis pipeline and persist results."""
+    configure_logging(level="INFO")
+    bind_task(job_id)
+    log.info("analysis_job_start", job_id=job_id, video_id=video_id)
+
+    settings = get_settings()
+    repos = build_repositories(settings)
+    storage = build_storage(settings)
+
+    # Mark job running
+    jobs_repo = repos.get("jobs")
+    job_doc = await jobs_repo.get(job_id)
+    if not job_doc:
+        log.error("job_not_found", job_id=job_id)
+        return {"error": "job not found"}
+
+    job_doc["status"] = "running"
+    job_doc["started_at"] = datetime.now(timezone.utc).isoformat()
+    await jobs_repo.put(job_id, job_doc)
+
+    try:
+        # Fetch video metadata
+        videos_repo = repos.get("videos")
+        video_doc = await videos_repo.get(video_id)
+        if not video_doc:
+            raise FileNotFoundError(f"video {video_id} not found")
+
+        # Download the file to a temp path for analysis
+        data = await storage.get(video_doc["storage_key"])
+        suffix = Path(video_doc["filename"]).suffix or ".mp4"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+
+        try:
+            cfg = AnalyzerConfig(
+                scene_threshold=settings.analysis_scene_threshold,
+                sample_fps=settings.analysis_sample_fps,
+                ocr_languages=settings.analysis_ocr_languages.split(","),
+                yolo_model=settings.analysis_yolo_model,
+                enable_face=settings.analysis_enable_face,
+                enable_pose=settings.analysis_enable_pose,
+                max_video_seconds=settings.analysis_max_video_seconds,
+            )
+            analyzer = VideoAnalyzer(config=cfg)
+            result = await analyzer.analyze(
+                tmp_path,
+                video_id=video_id,
+                blueprint_id=uuid.uuid4().hex,
+                blueprint_name=blueprint_name,
+            )
+        finally:
+            try:
+                Path(tmp_path).unlink()
+            except OSError:
+                pass
+
+        # Persist blueprint
+        from app.services.blueprint_service import BlueprintService
+        bp_service = BlueprintService(repos.registry)
+        await bp_service.save(owner_id, result.blueprint)
+
+        # Update video metadata with probe results
+        await videos_repo.put(video_id, {
+            "duration_seconds": result.stats.duration_seconds,
+            "width": result.stats.width,
+            "height": result.stats.height,
+            "fps": result.stats.fps,
+            "analysis_id": job_id,
+        })
+
+        # Mark job succeeded
+        job_doc = await jobs_repo.get(job_id)
+        job_doc["status"] = "succeeded"
+        job_doc["progress"] = 1.0
+        job_doc["finished_at"] = datetime.now(timezone.utc).isoformat()
+        job_doc["result"] = {
+            "video_id": video_id,
+            "blueprint_id": result.blueprint.id,
+            "scene_count": result.scene_count,
+            "detected_bpm": result.detected_bpm,
+        }
+        await jobs_repo.put(job_id, job_doc)
+
+        # Notify the user
+        from app.services.user_service import UserService
+        user_svc = UserService(repos.registry)
+        await user_svc.create_notification(
+            owner_id,
+            kind="success",
+            title="Analysis complete",
+            body=f"Generated blueprint '{blueprint_name}' with {result.scene_count} scenes.",
+            entity_type="blueprint",
+            entity_id=result.blueprint.id,
+        )
+
+        log.info("analysis_job_done", job_id=job_id, blueprint_id=result.blueprint.id)
+        return job_doc["result"]
+
+    except Exception as e:
+        log.exception("analysis_job_failed", job_id=job_id, error=str(e))
+        job_doc = await jobs_repo.get(job_id) or {}
+        job_doc["status"] = "failed"
+        job_doc["error"] = str(e)
+        job_doc["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await jobs_repo.put(job_id, job_doc)
+        raise
+
+
+@celery_app.task(name="zorkvdo.run_analysis", bind=True)
+def run_analysis_task(self, job_id: str, video_id: str, owner_id: str, blueprint_name: str) -> dict:
+    return _run_async(run_analysis_job(job_id, video_id, owner_id, blueprint_name))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Clip matching
+# ──────────────────────────────────────────────────────────────────────
+async def run_match_clips_job(
+    job_id: str, blueprint_id: str, owner_id: str, clip_ids: list[str]
+) -> dict:
+    from zorkvdo_ai import ClipMatcher
+    from app.services.blueprint_service import BlueprintService
+
+    configure_logging(level="INFO")
+    bind_task(job_id)
+    settings = get_settings()
+    repos = build_repositories(settings)
+    storage = build_storage(settings)
+
+    jobs_repo = repos.get("jobs")
+    job_doc = await jobs_repo.get(job_id) or {}
+    job_doc["status"] = "running"
+    job_doc["started_at"] = datetime.now(timezone.utc).isoformat()
+    await jobs_repo.put(job_id, job_doc)
+
+    try:
+        bp_service = BlueprintService(repos.registry)
+        blueprint = await bp_service.get_raw(blueprint_id)
+
+        # Resolve clip paths
+        clips_repo = repos.get("videos")
+        clip_pairs: list[tuple[str, str]] = []
+        for cid in clip_ids:
+            doc = await clips_repo.get(cid)
+            if not doc or doc.get("owner_id") != owner_id:
+                continue
+            # Download to a temp file
+            data = await storage.get(doc["storage_key"])
+            suffix = Path(doc["filename"]).suffix or ".mp4"
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tmp.write(data)
+            tmp.close()
+            clip_pairs.append((cid, tmp.name))
+
+        try:
+            matcher = ClipMatcher()
+            matches = await matcher.match(blueprint, clip_pairs)
+        finally:
+            for _, path in clip_pairs:
+                try:
+                    Path(path).unlink()
+                except OSError:
+                    pass
+
+        # Persist matches into the job result
+        job_doc = await jobs_repo.get(job_id)
+        job_doc["status"] = "succeeded"
+        job_doc["progress"] = 1.0
+        job_doc["finished_at"] = datetime.now(timezone.utc).isoformat()
+        job_doc["result"] = {
+            "blueprint_id": blueprint_id,
+            "matches": [m.model_dump(mode="json") for m in matches],
+        }
+        await jobs_repo.put(job_id, job_doc)
+        return job_doc["result"]
+
+    except Exception as e:
+        log.exception("match_clips_job_failed", job_id=job_id, error=str(e))
+        job_doc = await jobs_repo.get(job_id) or {}
+        job_doc["status"] = "failed"
+        job_doc["error"] = str(e)
+        job_doc["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await jobs_repo.put(job_id, job_doc)
+        raise
+
+
+@celery_app.task(name="zorkvdo.run_match_clips", bind=True)
+def run_match_clips_task(
+    self, job_id: str, blueprint_id: str, owner_id: str, clip_ids: list[str]
+) -> dict:
+    return _run_async(run_match_clips_job(job_id, blueprint_id, owner_id, clip_ids))
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Rendering
+# ──────────────────────────────────────────────────────────────────────
+async def run_render_job(
+    job_id: str,
+    project_id: str,
+    owner_id: str,
+    blueprint_id: str,
+    clip_mapping: list[dict],
+    quality: str,
+    aspect_ratio: str | None,
+) -> dict:
+    """Render a final video from a blueprint + user clips.
+
+    The actual FFmpeg pipeline lives in `app.workers.renderer`. Here we
+    orchestrate: download clips → invoke renderer → upload output →
+    create output Video entity → mark job done.
+    """
+    from app.services.blueprint_service import BlueprintService
+    from app.services.video_service import VideoService
+    from app.workers.renderer import render_video
+
+    configure_logging(level="INFO")
+    bind_task(job_id)
+    settings = get_settings()
+    repos = build_repositories(settings)
+    storage = build_storage(settings)
+
+    jobs_repo = repos.get("jobs")
+    job_doc = await jobs_repo.get(job_id) or {}
+    job_doc["status"] = "running"
+    job_doc["started_at"] = datetime.now(timezone.utc).isoformat()
+    await jobs_repo.put(job_id, job_doc)
+
+    try:
+        bp_service = BlueprintService(repos.registry)
+        blueprint = await bp_service.get_raw(blueprint_id)
+
+        # Resolve + download clips
+        clips_repo = repos.get("videos")
+        clip_paths: dict[str, str] = {}  # clip_id → local path
+        for mapping in clip_mapping:
+            cid = mapping["clip_id"]
+            doc = await clips_repo.get(cid)
+            if not doc:
+                continue
+            data = await storage.get(doc["storage_key"])
+            suffix = Path(doc["filename"]).suffix or ".mp4"
+            tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+            tmp.write(data)
+            tmp.close()
+            clip_paths[cid] = tmp.name
+
+        try:
+            output_path = await render_video(
+                blueprint=blueprint,
+                clip_mapping=clip_mapping,
+                clip_paths=clip_paths,
+                quality=quality,
+                aspect_ratio=aspect_ratio,
+            )
+
+            # Upload the rendered file
+            video_svc = VideoService(repos.registry, storage, settings)
+            with open(output_path, "rb") as f:
+                video_pub = await video_svc.upload(
+                    owner_id=owner_id,
+                    filename=f"{project_id}_render.mp4",
+                    content_type="video/mp4",
+                    size_bytes=Path(output_path).stat().st_size,
+                    kind="output",
+                    stream=f.read(),
+                )
+        finally:
+            for p in clip_paths.values():
+                try:
+                    Path(p).unlink()
+                except OSError:
+                    pass
+            try:
+                Path(output_path).unlink()
+            except (OSError, UnboundLocalError):
+                pass
+
+        # Update project
+        proj_repo = repos.get("projects")
+        proj = await proj_repo.get(project_id)
+        if proj:
+            proj["output_video_id"] = video_pub.id
+            proj["status"] = "rendered"
+            await proj_repo.put(project_id, proj)
+
+        # Mark job done
+        job_doc = await jobs_repo.get(job_id)
+        job_doc["status"] = "succeeded"
+        job_doc["progress"] = 1.0
+        job_doc["finished_at"] = datetime.now(timezone.utc).isoformat()
+        job_doc["result"] = {
+            "project_id": project_id,
+            "output_video_id": video_pub.id,
+        }
+        await jobs_repo.put(job_id, job_doc)
+
+        # Notify
+        from app.services.user_service import UserService
+        user_svc = UserService(repos.registry)
+        await user_svc.create_notification(
+            owner_id,
+            kind="success",
+            title="Render complete",
+            body=f"Your video is ready: {video_pub.filename}",
+            entity_type="video",
+            entity_id=video_pub.id,
+        )
+        return job_doc["result"]
+
+    except Exception as e:
+        log.exception("render_job_failed", job_id=job_id, error=str(e))
+        job_doc = await jobs_repo.get(job_id) or {}
+        job_doc["status"] = "failed"
+        job_doc["error"] = str(e)
+        job_doc["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await jobs_repo.put(job_id, job_doc)
+        raise
+
+
+@celery_app.task(name="zorkvdo.run_render", bind=True)
+def run_render_task(
+    self,
+    job_id: str,
+    project_id: str,
+    owner_id: str,
+    blueprint_id: str,
+    clip_mapping: list[dict],
+    quality: str = "high",
+    aspect_ratio: str | None = None,
+) -> dict:
+    return _run_async(
+        run_render_job(
+            job_id, project_id, owner_id, blueprint_id, clip_mapping, quality, aspect_ratio
+        )
+    )

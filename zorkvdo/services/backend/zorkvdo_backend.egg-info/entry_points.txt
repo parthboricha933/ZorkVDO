@@ -1,0 +1,3 @@
+[console_scripts]
+zorkvdo-api = app.main:run
+zorkvdo-worker = app.workers.celery_app:run_worker

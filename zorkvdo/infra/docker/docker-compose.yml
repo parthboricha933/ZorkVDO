@@ -1,0 +1,117 @@
+# ZorkVDO local development stack
+# Spin up everything the backend needs with: `docker compose up`
+#
+# Services:
+#   - api      : FastAPI app on :8000
+#   - worker   : Celery worker (consumes zorkvdo queue)
+#   - flower   : Celery monitor on :5555
+#   - redis    : broker + result backend on :6379
+#   - minio    : S3-compatible storage on :9000 + console on :9001
+#
+# The API defaults to in-memory DB + local-filesystem storage so the
+# stack runs without Firebase. Override via .env to enable Firestore / S3.
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: zorkvdo-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: zorkvdo-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    environment:
+      MINIO_ROOT_USER: zorkvdo
+      MINIO_ROOT_PASSWORD: zorkvdo_secret
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+    container_name: zorkvdo-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT: http://minio:9000
+      STORAGE_BACKEND: local  # flip to "s3" once minio bucket is provisioned
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ../../services/backend:/app/services/backend
+      - ../../packages:/app/packages
+      - api-storage:/app/services/backend/storage_local
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+    container_name: zorkvdo-worker
+    restart: unless-stopped
+    command: ["celery", "-A", "app.workers.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    env_file:
+      - ../backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      S3_ENDPOINT: http://minio:9000
+      STORAGE_BACKEND: local
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ../../services/backend:/app/services/backend
+      - ../../packages:/app/packages
+      - worker-storage:/app/services/backend/storage_local
+
+  flower:
+    image: mher/flower:1.2.0
+    container_name: zorkvdo-flower
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  minio-data:
+  api-storage:
+  worker-storage:
