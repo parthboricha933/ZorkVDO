@@ -112,3 +112,30 @@ Stage Summary:
 - Only 2 credentials pending for full production: firebase-service-account.json + FCM_SERVER_KEY
 - Backend boots cleanly, /api/v1/status works unauthenticated, website shows live status
 - Ready for: user to provide firebase-service-account.json + FCM_SERVER_KEY, OR start Flutter app module
+
+---
+Task ID: 4
+Agent: main (Super Z)
+Task: Deploy ZorkVDO to GitHub + Vercel
+
+Work Log:
+- Created comprehensive .gitignore at /home/z/my-project (excludes .env, google-services.json, firebase-service-account.json, node_modules, .venv, storage_local, skills, upload, download, .zscripts, etc.)
+- Cleaned existing git index: removed 23 tracked files that should have been gitignored (.env, .zscripts/, Caddyfile, db/custom.db, download/*.png, examples/, mini-services/, upload/google-services.json)
+- Verified .env is NOT tracked (only .env.example with blank values is tracked)
+- Made initial commit: "feat: ZorkVDO — AI-powered viral video blueprint engine" with 210 tracked files
+- Attempted GitHub repo creation via API — token rejected with "Bad credentials" (likely auto-revoked by GitHub secret scanning after being shared in plaintext chat)
+- Vercel token worked — authenticated as user parthboricha933
+- Installed Vercel CLI v54.20.1 globally
+- Created Vercel project "zorkvdo" (lowercase required by Vercel)
+- First deploy went to wrong project ("my-project") — fixed by running `vercel link --project zorkvdo`
+- Second deploy: deployment was READY but returned 404 due to `output: "standalone"` in next.config.ts + custom build script with cp commands (designed for Docker, not Vercel)
+- Created vercel.json overriding buildCommand to `next build` (removes the Docker-specific cp commands)
+- Third deploy: BUILD SUCCEEDED, deployment READY, HTTP 200
+- Disabled SSO protection on the project via PATCH API (was blocking public access)
+- Verified via agent-browser: site loads, title "ZorkVDO — Create Viral Videos from Any Inspiration", all sections render, no console errors
+
+Stage Summary:
+- Vercel deployment LIVE at: https://zorkvdo-nayekvfye-parthboricha933s-projects.vercel.app
+- GitHub deployment BLOCKED: token rejected (needs new token from user)
+- Git commit is ready to push (7843359) once a valid GitHub token is provided
+- User reminded to rotate both tokens after deployment (shared in plaintext)
