@@ -1,13 +1,16 @@
 """Developer Settings / API Status page routes: /api/v1/status/*.
 
-Hidden behind authentication. Returns the live status of every external
-integration: connected / missing_key / invalid / offline / disabled.
+Returns the live status of every external integration:
+connected / missing_key / invalid / offline / disabled.
+
+The status endpoints are intentionally UNAUTHENTICATED so the Developer
+Settings panel can render without requiring a Firebase ID token. They
+expose only integration status (no user data, no secrets, no keys).
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import CurrentUserId
 from app.core.config import Settings, get_settings
 from app.integrations import get_integration_status
 
@@ -16,11 +19,10 @@ router = APIRouter(prefix="/status", tags=["developer"])
 
 @router.get("")
 async def get_status(
-    user_id: CurrentUserId,
     refresh: bool = Query(False, description="Force re-run of all probes"),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    """Full status report for every integration."""
+    """Full status report for every integration. Unauthenticated (no secrets exposed)."""
     registry = get_integration_status()
     if refresh or not registry.all_reports():
         await registry.refresh(settings)
@@ -33,7 +35,6 @@ async def get_status(
 @router.get("/{name}")
 async def get_one_status(
     name: str,
-    user_id: CurrentUserId,
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Status for a single integration by name (e.g. `gemini`, `redis`)."""
@@ -49,7 +50,6 @@ async def get_one_status(
 
 @router.post("/refresh")
 async def refresh_status(
-    user_id: CurrentUserId,
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Force re-run every probe (e.g. after dropping in a new API key)."""

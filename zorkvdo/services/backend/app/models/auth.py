@@ -1,33 +1,12 @@
-"""Auth-related request/response models."""
+"""Auth-related request/response models.
+
+Note: registration + login are NOT backend endpoints — they happen
+client-side via the Firebase Auth SDK. The backend only verifies
+Firebase ID tokens and syncs user profiles.
+"""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
-from pydantic import BaseModel, EmailStr, Field
-
-
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(..., min_length=8, max_length=128)
-    display_name: str = Field(..., min_length=1, max_length=80)
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    user: "UserPublic"
+from pydantic import BaseModel
 
 
 class UserPublic(BaseModel):
@@ -40,14 +19,14 @@ class UserPublic(BaseModel):
     updated_at: str
 
 
-# Avoid circular import at type-check time
-TokenResponse.model_rebuild()
+class SyncResponse(BaseModel):
+    """Returned by POST /auth/sync after Firebase sign-in."""
+
+    user: UserPublic
+    is_new_user: bool
 
 
 class LogoutResponse(BaseModel):
-    revoked: bool
+    """Firebase Auth logout happens client-side; this is a no-op confirmation."""
 
-
-class PasswordChangeRequest(BaseModel):
-    old_password: str
-    new_password: str = Field(..., min_length=8, max_length=128)
+    message: str = "Logout happens client-side via Firebase Auth SDK."

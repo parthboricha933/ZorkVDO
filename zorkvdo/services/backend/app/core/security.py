@@ -1,106 +1,140 @@
-"""JWT + password utilities.
+"""Firebase Authentication utilities.
 
-The auth flow is provider-agnostic: JWTs are issued by this service.
-Firebase Auth can later be wired in as an *alternative* identity provider
-via `verify_external_token` in the auth service — but the access/refresh
-tokens used by the API are always ours.
+The Flutter client signs in via the Firebase Auth SDK and sends a
+Firebase ID token in the `Authorization: Bearer <token>` header. The
+backend verifies the token via `firebase-admin.auth.verify_id_token()`
+and uses the resulting `uid` as the user identifier.
 
-We use `bcrypt` directly (not passlib) to avoid the well-known
-passlib/bcrypt 4.x incompatibility. Passwords >72 bytes are
-SHA-256-hashed first (a standard workaround that preserves bcrypt's
-salt + work-factor protection while removing the byte limit).
+There is no bcrypt password hashing, no JWT issuance, no JWT_SECRET —
+Firebase Auth owns the entire identity layer.
+
+If `firebase-admin` is not installed or no service account is
+configured, `verify_token` raises `AuthError` so the request is
+rejected with 401. The rest of the app continues to function — only
+authenticated endpoints are unreachable.
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any
 
-import bcrypt
-import jwt
-
-from app.core.config import Settings
+from app.core.exceptions import AuthError
 from app.core.logging import get_logger
 
 log = get_logger(__name__)
 
-TokenType = Literal["access", "refresh"]
+
+@dataclass
+class FirebaseUser:
+    """Decoded Firebase ID token claims + uid."""
+
+    uid: str
+    email: str | None
+    email_verified: bool
+    name: str | None
+    picture: str | None
+    provider: str | None
+    raw_claims: dict[str, Any]
 
 
-class TokenError(Exception):
-    """Raised when a token is invalid, expired, or malformed."""
+# Module-level cache of the initialised firebase-admin app.
+# `verify_id_token` is synchronous in firebase-admin — we call it via
+# `asyncio.to_thread` from the dependency to avoid blocking the event loop.
+_firebase_app: Any | None = None
+_firebase_init_attempted: bool = False
 
 
-def _pre_hash(password: str) -> bytes:
-    """Pre-hash long passwords so bcrypt's 72-byte limit isn't an issue.
-
-    This is the same scheme Django uses: SHA-256 → base64 → bcrypt.
-    """
-    digest = hashlib.sha256(password.encode("utf-8")).digest()
-    return base64.b64encode(digest)
-
-
-def hash_password(plain: str) -> str:
-    """Return a bcrypt hash suitable for storage."""
-    salt = bcrypt.gensalt(rounds=12)
-    hashed = bcrypt.hashpw(_pre_hash(plain), salt)
-    return hashed.decode("utf-8")
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    """Constant-time password verification."""
-    try:
-        return hmac.compare_digest(
-            bcrypt.hashpw(_pre_hash(plain), hashed.encode("utf-8")),
-            hashed.encode("utf-8"),
+def _get_firebase_app() -> Any:
+    """Lazily initialise firebase-admin. Returns the app object."""
+    global _firebase_app, _firebase_init_attempted
+    if _firebase_app is not None:
+        return _firebase_app
+    if _firebase_init_attempted:
+        # Already tried and failed — don't retry on every request.
+        raise AuthError(
+            "Firebase Auth not configured. Drop a service-account JSON at "
+            "FIREBASE_CREDENTIALS_PATH and restart the backend."
         )
-    except (ValueError, TypeError):
-        return False
 
+    _firebase_init_attempted = True
+    try:
+        import firebase_admin
+        from firebase_admin import credentials
+    except ImportError as e:
+        raise AuthError(
+            "firebase-admin is not installed. Install with: pip install firebase-admin"
+        ) from e
 
-def create_token(
-    *,
-    settings: Settings,
-    user_id: str,
-    token_type: TokenType,
-    extra_claims: dict[str, Any] | None = None,
-) -> tuple[str, datetime]:
-    """Return (token, expires_at_utc)."""
-    if token_type == "access":
-        ttl = timedelta(minutes=settings.jwt_access_ttl_minutes)
+    import os
+    from pathlib import Path
+
+    if firebase_admin._apps.get("[DEFAULT]"):  # type: ignore[attr-defined]
+        _firebase_app = firebase_admin.get_app()
+        return _firebase_app
+
+    cred = None
+    creds_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "")
+    if creds_path and Path(creds_path).exists():
+        cred = credentials.Certificate(creds_path)
+    elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        cred = credentials.ApplicationDefault()
     else:
-        ttl = timedelta(days=settings.jwt_refresh_ttl_days)
-    expires_at = datetime.now(timezone.utc) + ttl
-    now = datetime.now(timezone.utc)
-    payload: dict[str, Any] = {
-        "sub": user_id,
-        "type": token_type,
-        "iat": int(now.timestamp()),
-        "exp": int(expires_at.timestamp()),
-        "jti": uuid.uuid4().hex,
-    }
-    if extra_claims:
-        payload.update(extra_claims)
-    token = jwt.encode(
-        payload,
-        settings.jwt_secret.get_secret_value(),
-        algorithm=settings.jwt_algorithm,
-    )
-    log.debug("jwt_issued", user_id=user_id, token_type=token_type, exp=expires_at.isoformat())
-    return token, expires_at
-
-
-def decode_token(settings: Settings, token: str) -> dict[str, Any]:
-    try:
-        return jwt.decode(
-            token,
-            settings.jwt_secret.get_secret_value(),
-            algorithms=[settings.jwt_algorithm],
+        # No credentials available — Firebase Auth cannot verify tokens.
+        # The rest of the backend still works (in-memory DB, local storage),
+        # but every authenticated endpoint will 401 until creds are dropped in.
+        log.warning(
+            "firebase_auth_not_configured",
+            hint="Drop firebase-service-account.json at FIREBASE_CREDENTIALS_PATH",
         )
-    except jwt.ExpiredSignatureError as e:
-        raise TokenError("token expired") from e
-    except jwt.InvalidTokenError as e:
-        raise TokenError(f"invalid token: {e}") from e
+        raise AuthError(
+            "Firebase Auth not configured. Drop a service-account JSON at "
+            "FIREBASE_CREDENTIALS_PATH and restart the backend."
+        )
+
+    project_id = os.environ.get("FIREBASE_PROJECT_ID", "")
+    firebase_admin.initialize_app(cred, {"projectId": project_id} or None)
+    _firebase_app = firebase_admin.get_app()
+    log.info("firebase_auth_initialised", project_id=project_id)
+    return _firebase_app
+
+
+def verify_firebase_token(token: str) -> FirebaseUser:
+    """Verify a Firebase ID token and return the user info.
+
+    Raises `AuthError` if:
+      - firebase-admin isn't installed
+      - no service-account JSON is configured
+      - the token is malformed, expired, or revoked
+    """
+    try:
+        app = _get_firebase_app()
+        from firebase_admin import auth as fb_auth
+
+        claims = fb_auth.verify_id_token(token, check_revoked=True)
+    except AuthError:
+        raise
+    except Exception as e:
+        # firebase-admin raises `firebase_admin.auth.InvalidIdTokenError`,
+        # `ExpiredIdTokenError`, `RevokedIdTokenError`, etc. — collapse them
+        # all into a single AuthError for the API surface.
+        log.warning("firebase_token_invalid", error=str(e)[:200])
+        raise AuthError("invalid or expired Firebase ID token") from e
+
+    return FirebaseUser(
+        uid=claims["uid"],
+        email=claims.get("email"),
+        email_verified=claims.get("email_verified", False),
+        name=claims.get("name"),
+        picture=claims.get("picture"),
+        provider=claims.get("firebase", {}).get("sign_in_provider"),
+        raw_claims=claims,
+    )
+
+
+def is_firebase_configured() -> bool:
+    """True if firebase-admin can be initialised (used by status probes)."""
+    try:
+        _get_firebase_app()
+        return True
+    except AuthError:
+        return False

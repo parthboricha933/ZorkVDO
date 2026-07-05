@@ -1,102 +1,58 @@
-"""Auth routes: /api/v1/auth/*."""
+"""Auth routes: /api/v1/auth/*.
+
+Endpoints:
+  - GET  /auth/me        → current user profile (verifies Firebase token)
+  - POST /auth/sync      → upsert user doc after Firebase sign-in
+  - POST /auth/logout    → no-op (Firebase logout is client-side)
+
+Registration and login are NOT here — they happen via the Firebase Auth
+SDK in the Flutter client.
+"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 
 from app.api.deps import CurrentUserId, get_auth_service
-from app.models.auth import (
-    LoginRequest,
-    LogoutResponse,
-    PasswordChangeRequest,
-    RefreshRequest,
-    RegisterRequest,
-    TokenResponse,
-    UserPublic,
-)
+from app.models.auth import LogoutResponse, SyncResponse, UserPublic
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(
-    req: RegisterRequest,
+@router.get("/me", response_model=UserPublic)
+async def me(
+    uid: CurrentUserId,
     auth_service: AuthService = Depends(get_auth_service),
-) -> TokenResponse:
-    return await auth_service.register(req)
+) -> UserPublic:
+    """Return the current user's profile. Verifies the Firebase token via the dependency."""
+    return await auth_service.get_user_public(uid)
 
 
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    req: LoginRequest,
+@router.post("/sync", response_model=SyncResponse)
+async def sync_user(
+    uid: CurrentUserId,
     auth_service: AuthService = Depends(get_auth_service),
-) -> TokenResponse:
-    return await auth_service.login(req)
+) -> SyncResponse:
+    """Upsert the user doc in Firestore after Firebase sign-in.
 
-
-@router.post("/refresh", response_model=TokenResponse)
-async def refresh(
-    req: RefreshRequest,
-    auth_service: AuthService = Depends(get_auth_service),
-) -> TokenResponse:
-    return await auth_service.refresh(req)
+    The Flutter client calls this once after successful Firebase sign-in
+    to ensure the backend has a user record (needed for plan, settings,
+    notifications, etc.).
+    """
+    from app.api.deps import _last_firebase_user
+    user = _last_firebase_user(uid)
+    if user is None:
+        # If the dependency didn't stash the user, re-verify is not possible
+        # without the raw token. Fall back to a profile-only sync.
+        from app.core.exceptions import AuthError
+        raise AuthError("Firebase user context not available — re-send token")
+    existing = await auth_service.repos.get("users").get(uid)
+    profile = await auth_service.sync_user(user)
+    return SyncResponse(user=profile, is_new_user=existing is None)
 
 
 @router.post("/logout", response_model=LogoutResponse)
-async def logout(
-    request: Request,
-    user_id: CurrentUserId,
-    auth_service: AuthService = Depends(get_auth_service),
-) -> LogoutResponse:
-    """Revoke the current access token (and any refresh token in the body)."""
-    import json
-
-    # Extract refresh token from body if present
-    body: dict = {}
-    try:
-        raw = await request.body()
-        if raw:
-            body = json.loads(raw)
-    except Exception:
-        body = {}
-    refresh_token = body.get("refresh_token")
-
-    # Get the access token from the Authorization header
-    auth_header = request.headers.get("authorization", "")
-    access_token = ""
-    if auth_header.lower().startswith("bearer "):
-        access_token = auth_header[7:].strip()
-
-    revoked = await auth_service.logout(access_token, refresh_token)
-    return LogoutResponse(revoked=revoked)
-
-
-@router.post("/logout-all", response_model=LogoutResponse)
-async def logout_all(
-    user_id: CurrentUserId,
-    auth_service: AuthService = Depends(get_auth_service),
-) -> LogoutResponse:
-    """Revoke every refresh token for the current user."""
-    token_repo = auth_service.repos.get("refresh_tokens")
-    tokens = await token_repo.query(where={"user_id": user_id})
-    for t in tokens:
-        await token_repo.delete(t["id"])
-    return LogoutResponse(revoked=len(tokens) > 0)
-
-
-@router.get("/me", response_model=UserPublic)
-async def me(
-    user_id: CurrentUserId,
-    auth_service: AuthService = Depends(get_auth_service),
-) -> UserPublic:
-    return await auth_service.get_user_public(user_id)
-
-
-@router.post("/change-password")
-async def change_password(
-    req: PasswordChangeRequest,
-    user_id: CurrentUserId,
-    auth_service: AuthService = Depends(get_auth_service),
-) -> dict:
-    ok = await auth_service.change_password(user_id, req.old_password, req.new_password)
-    return {"changed": ok}
+async def logout(uid: CurrentUserId) -> LogoutResponse:
+    """Firebase Auth logout happens client-side. This endpoint exists for
+    symmetry + to allow the client to call it as part of its logout flow."""
+    return LogoutResponse()

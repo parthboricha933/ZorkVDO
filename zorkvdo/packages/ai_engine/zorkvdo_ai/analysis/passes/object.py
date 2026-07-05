@@ -31,7 +31,7 @@ class ObjectDetector:
     def __init__(
         self,
         *,
-        yolo_model: str = "yolov8n.pt",
+        yolo_model: str = "yolo11n.pt",
         enable_face: bool = True,
         enable_pose: bool = True,
         sample_fps: float = 1.0,

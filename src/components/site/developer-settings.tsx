@@ -14,9 +14,9 @@ import {
   Database,
   Cloud,
   Cpu,
-  Bell,
-  CreditCard,
-  BarChart3,
+  Film,
+  Volume2,
+  Server,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -92,13 +92,23 @@ const statusConfig: Record<
 const categoryIcons: Record<string, typeof Sparkles> = {
   ai: Sparkles,
   firebase: Database,
-  database: Database,
   storage: Cloud,
   workers: Cpu,
-  video_engine: Cpu,
-  notifications: Bell,
-  analytics: BarChart3,
-  payments: CreditCard,
+  video: Film,
+  cv: Cpu,
+  audio: Volume2,
+  backend: Server,
+};
+
+const categoryLabels: Record<string, string> = {
+  ai: "AI",
+  firebase: "Firebase",
+  storage: "Storage",
+  workers: "Workers",
+  video: "Video Processing",
+  cv: "Computer Vision",
+  audio: "Audio Processing",
+  backend: "Backend",
 };
 
 export function DeveloperSettings() {
@@ -106,24 +116,16 @@ export function DeveloperSettings() {
   const [summary, setSummary] = useState<StatusSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const fetchStatus = async () => {
     setLoading(true);
-    setError(null);
     try {
-      // The status endpoint requires auth. For the marketing site demo, we
-      // show a static snapshot if the backend is unreachable or returns 401.
-      const resp = await fetch("/api/v1/status", {
-        headers: { Accept: "application/json" },
-      }).catch(() => null);
-
-      if (resp && resp.ok) {
+      const resp = await fetch("/api/v1/status?XTransformPort=8000");
+      if (resp.ok) {
         const data = await resp.json();
         setIntegrations(data.integrations);
         setSummary(data.summary);
       } else {
-        // Fallback: show a representative snapshot
         setIntegrations(snapshotIntegrations);
         setSummary(snapshotSummary);
       }
@@ -174,14 +176,12 @@ export function DeveloperSettings() {
               Every integration, visible at a glance
             </h2>
             <p className="mt-4 text-zinc-400 text-lg">
-              The hidden Developer Settings screen shows the live status of
-              every external service. Missing keys disable only their feature
-              — the rest of the app keeps running.
+              Live status of every external service. Missing keys disable
+              only their feature — the rest of the app keeps running.
             </p>
           </motion.div>
         </div>
 
-        {/* Summary bar */}
         {summary && (
           <motion.div
             initial={{ opacity: 0, y: 12 }}
@@ -224,10 +224,10 @@ export function DeveloperSettings() {
           </motion.div>
         )}
 
-        {/* Integration grid by category */}
         <div className="space-y-8">
           {Object.entries(grouped).map(([category, items], catIdx) => {
             const CatIcon = categoryIcons[category] || Settings2;
+            const catLabel = categoryLabels[category] || category;
             return (
               <motion.div
                 key={category}
@@ -239,7 +239,7 @@ export function DeveloperSettings() {
                 <div className="flex items-center gap-2 mb-3">
                   <CatIcon className="h-4 w-4 text-zinc-400" />
                   <h3 className="text-xs font-mono uppercase tracking-widest text-zinc-500">
-                    {category.replace("_", " ")}
+                    {catLabel}
                   </h3>
                 </div>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -294,8 +294,7 @@ export function DeveloperSettings() {
         </div>
 
         <p className="mt-10 text-center text-xs text-zinc-600 max-w-2xl mx-auto">
-          This is a live snapshot from the running backend. The same data is
-          available at <code className="text-zinc-500 font-mono">GET /api/v1/status</code> (auth required).
+          Live data from <code className="text-zinc-500 font-mono">GET /api/v1/status</code>.
           Backend never crashes on missing keys — only the dependent feature is skipped.
         </p>
       </div>
@@ -325,99 +324,36 @@ function SummaryPill({
   );
 }
 
-// ── Snapshot used when the backend is offline or unauthenticated ──
+// Snapshot used when backend is unreachable
 const snapshotIntegrations: Integration[] = [
-  {
-    name: "Gemini AI",
-    category: "ai",
-    status: "configured",
-    message: "API key present. Active provider.",
-    required_env_vars: ["GEMINI_API_KEY"],
-    missing_env_vars: [],
-    last_checked: "",
-    extra: { model: "gemini-1.5-pro" },
-  },
-  {
-    name: "Firebase (client SDK)",
-    category: "firebase",
-    status: "configured",
-    message: "Client SDK config present (google-services.json values).",
-    required_env_vars: ["FIREBASE_PROJECT_ID", "FIREBASE_API_KEY"],
-    missing_env_vars: [],
-    last_checked: "",
-    extra: { project_id: "zorkvdo" },
-  },
-  {
-    name: "Storage (local)",
-    category: "storage",
-    status: "connected",
-    message: "Using local filesystem.",
-    required_env_vars: [],
-    missing_env_vars: [],
-    last_checked: "",
-    extra: { backend: "local" },
-  },
-  {
-    name: "FFmpeg",
-    category: "video_engine",
-    status: "connected",
-    message: "ffmpeg + ffprobe available.",
-    required_env_vars: [],
-    missing_env_vars: [],
-    last_checked: "",
-    extra: {},
-  },
-  {
-    name: "Redis",
-    category: "workers",
-    status: "service_offline",
-    message: "Redis unreachable. Background jobs run inline.",
-    required_env_vars: ["REDIS_URL"],
-    missing_env_vars: [],
-    last_checked: "",
-    extra: {},
-  },
-  {
-    name: "Firebase Cloud Messaging",
-    category: "notifications",
-    status: "missing_api_key",
-    message: "FCM_SERVER_KEY not set. Push notifications disabled.",
-    required_env_vars: ["FCM_SERVER_KEY"],
-    missing_env_vars: ["FCM_SERVER_KEY"],
-    last_checked: "",
-    extra: {},
-  },
-  {
-    name: "Stripe (payments)",
-    category: "payments",
-    status: "missing_api_key",
-    message: "STRIPE_SECRET_KEY not set. Subscriptions return mock responses.",
-    required_env_vars: ["STRIPE_SECRET_KEY"],
-    missing_env_vars: ["STRIPE_SECRET_KEY"],
-    last_checked: "",
-    extra: {},
-  },
-  {
-    name: "YOLO (object detection)",
-    category: "video_engine",
-    status: "disabled",
-    message: "ultralytics not installed. Falls back to OpenCV Haar cascades.",
-    required_env_vars: [],
-    missing_env_vars: [],
-    last_checked: "",
-    extra: {},
-  },
+  { name: "Gemini AI", category: "ai", status: "configured", message: "API key present. Provider=gemini.", required_env_vars: ["GEMINI_API_KEY"], missing_env_vars: [], last_checked: "", extra: { model: "gemini-1.5-pro" } },
+  { name: "Firebase Authentication", category: "firebase", status: "missing_api_key", message: "Service account not configured.", required_env_vars: ["FIREBASE_CREDENTIALS_PATH"], missing_env_vars: ["firebase-service-account.json (file)"], last_checked: "", extra: {} },
+  { name: "Firestore", category: "firebase", status: "disabled", message: "Not active (DATABASE_BACKEND=memory).", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "Firebase Storage", category: "firebase", status: "configured", message: "Storage bucket configured.", required_env_vars: ["FIREBASE_STORAGE_BUCKET"], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "Firebase Cloud Messaging", category: "firebase", status: "missing_api_key", message: "FCM_SERVER_KEY not set.", required_env_vars: ["FCM_SERVER_KEY"], missing_env_vars: ["FCM_SERVER_KEY"], last_checked: "", extra: {} },
+  { name: "Firebase Analytics (client)", category: "firebase", status: "configured", message: "Client SDK config present.", required_env_vars: ["FIREBASE_API_KEY", "FIREBASE_APP_ID"], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "Firebase Crashlytics (client)", category: "firebase", status: "configured", message: "Client SDK config present.", required_env_vars: ["FIREBASE_API_KEY", "FIREBASE_APP_ID"], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "Storage (local)", category: "storage", status: "connected", message: "Using local filesystem.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: { backend: "local" } },
+  { name: "Redis", category: "workers", status: "service_offline", message: "Redis unreachable.", required_env_vars: ["REDIS_URL"], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "FFmpeg", category: "video", status: "connected", message: "ffmpeg + ffprobe available.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "OpenCV", category: "video", status: "connected", message: "opencv-python is installed.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "MoviePy", category: "video", status: "connected", message: "moviepy is installed.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "YOLOv11 (object detection)", category: "cv", status: "disabled", message: "ultralytics not installed.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "MediaPipe (pose)", category: "cv", status: "disabled", message: "mediapipe not installed.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "EasyOCR (captions)", category: "cv", status: "disabled", message: "easyocr not installed.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "librosa (audio)", category: "audio", status: "connected", message: "librosa is installed.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
+  { name: "FastAPI", category: "backend", status: "connected", message: "FastAPI is running.", required_env_vars: [], missing_env_vars: [], last_checked: "", extra: {} },
 ];
 
 const snapshotSummary: StatusSummary = {
   last_refreshed: new Date().toISOString(),
   total: snapshotIntegrations.length,
   by_status: {
-    connected: 2,
-    configured: 2,
+    connected: 6,
+    configured: 4,
     missing_api_key: 2,
     invalid_credentials: 0,
     service_offline: 1,
-    disabled: 1,
+    disabled: 4,
   },
 };

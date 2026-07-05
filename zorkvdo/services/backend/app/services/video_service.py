@@ -1,4 +1,10 @@
-"""Video service — uploads, listing, deletion, storage delegation."""
+"""Video service — uploads, listing, deletion, storage delegation.
+
+Storage layout (per project spec):
+  - source videos → users/{uid}/uploads/{video_id}.mp4
+  - user clips    → users/{uid}/uploads/{video_id}.mp4  (kind=user_clip)
+  - rendered output → users/{uid}/renders/{video_id}.mp4 (kind=output)
+"""
 from __future__ import annotations
 
 import mimetypes
@@ -7,11 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError, PermissionError, ValidationError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.db.base import RepositoryRegistry
 from app.models.projects import VideoPublic
-from app.storage.base import Storage
+from app.storage import Storage, paths
+from app.storage.base import StoredObject
 
 log = get_logger(__name__)
 
@@ -45,11 +52,7 @@ class VideoService:
                 "file too large",
                 details={"max_bytes": self.settings.upload_max_bytes},
             )
-        allowed = (
-            self.settings.allowed_video_mimes
-            if kind != "output"
-            else self.settings.allowed_video_mimes
-        )
+        allowed = self.settings.allowed_video_mimes
         if content_type not in allowed:
             raise ValidationError(
                 "unsupported content type",
@@ -58,9 +61,15 @@ class VideoService:
 
         vid = uuid.uuid4().hex
         ext = Path(filename).suffix or mimetypes.guess_extension(content_type) or ""
-        key = f"users/{owner_id}/videos/{kind}/{vid}{ext}"
 
-        stored = await self.storage.put(
+        # Pick the right path helper based on kind
+        if kind == "output":
+            key = paths.user_render(owner_id, vid, ext)
+        else:
+            # Both `source` and `user_clip` go under uploads/
+            key = paths.user_upload(owner_id, vid, ext)
+
+        stored: StoredObject = await self.storage.put(
             key=key, stream=stream, content_type=content_type
         )
         now = datetime.now(timezone.utc).isoformat()
@@ -88,6 +97,7 @@ class VideoService:
             owner_id=owner_id,
             size=stored.size,
             kind=kind,
+            key=stored.key,
         )
         return VideoPublic(**doc)
 

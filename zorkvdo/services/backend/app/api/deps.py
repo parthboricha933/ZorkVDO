@@ -3,9 +3,14 @@
 All services are constructed once at startup and exposed via Depends().
 Routes receive their dependencies through these functions, so swapping
 an implementation (e.g. memory → firestore) is a one-line change.
+
+Auth: Firebase Authentication is primary. The Flutter client sends a
+Firebase ID token in the Authorization header; the backend verifies it
+via firebase-admin. There is no separate JWT issuance or bcrypt.
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 from typing import Annotated
 
@@ -15,7 +20,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AuthError
 from app.core.logging import get_logger
-from app.core.security import decode_token
+from app.core.security import FirebaseUser, verify_firebase_token
 from app.db import Repositories, build_repositories
 from app.services.analysis_service import AnalysisService
 from app.services.auth_service import AuthService
@@ -34,6 +39,11 @@ _lock = threading.Lock()
 _repos_cache: Repositories | None = None
 _storage_cache: Storage | None = None
 _ai_client_cache = None
+
+# Per-request stash of the decoded Firebase user, keyed by uid.
+# Lets routes access the full claims (email, picture, etc.) after the
+# dependency has already verified the token.
+_firebase_user_stash: dict[str, FirebaseUser] = {}
 
 
 def get_repositories(request: Request) -> Repositories:
@@ -72,10 +82,9 @@ def get_ai_client(request: Request):
 
 # ── Service factories ─────────────────────────────────────────────────
 def get_auth_service(
-    settings: Settings = Depends(get_settings),
     repos = Depends(get_repositories),
 ) -> AuthService:
-    return AuthService(settings=settings, repos=repos.registry)
+    return AuthService(repos=repos.registry)
 
 
 def get_project_service(repos = Depends(get_repositories)) -> ProjectService:
@@ -115,14 +124,15 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 async def get_current_user_id(
-    settings: Settings = Depends(get_settings),
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     authorization: str | None = Header(default=None),
 ) -> str:
-    """Resolve the user_id from the Bearer token.
+    """Resolve the user_id from the Firebase ID token in the Authorization header.
 
-    Accepts either the standard `Authorization: Bearer ...` header or
-    an `authorization` header (some clients lowercase it).
+    Raises AuthError if:
+      - No bearer token is present
+      - firebase-admin is not configured (no service-account JSON)
+      - The token is malformed, expired, or revoked
     """
     token: str | None = None
     if creds is not None:
@@ -132,29 +142,18 @@ async def get_current_user_id(
     if not token:
         raise AuthError("missing bearer token")
 
-    try:
-        claims = decode_token(settings, token)
-    except Exception as e:
-        raise AuthError("invalid or expired token") from e
-    if claims.get("type") != "access":
-        raise AuthError("not an access token")
+    # firebase-admin's verify_id_token is synchronous — run in a thread
+    # so the event loop isn't blocked.
+    user: FirebaseUser = await asyncio.to_thread(verify_firebase_token, token)
 
-    # Check revocation list (best-effort; skip when collection missing)
-    try:
-        repos = get_repositories_sync()
-        if repos:
-            revoked = await repos.get("refresh_tokens").get(f"revoked:{claims['jti']}")
-            if revoked:
-                raise AuthError("token revoked")
-    except AuthError:
-        raise
-    except Exception:
-        pass
+    # Stash for /auth/sync and other routes that need full claims
+    _firebase_user_stash[user.uid] = user
+    return user.uid
 
-    user_id = claims.get("sub")
-    if not user_id:
-        raise AuthError("malformed token: no subject")
-    return str(user_id)
+
+def _last_firebase_user(uid: str) -> FirebaseUser | None:
+    """Retrieve the stashed FirebaseUser for this uid (set by the dependency)."""
+    return _firebase_user_stash.get(uid)
 
 
 def get_repositories_sync() -> Repositories | None:

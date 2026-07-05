@@ -10,7 +10,7 @@ log = get_logger(__name__)
 
 
 def build_storage(settings: Settings) -> Storage:
-    backend = settings.storage_backend
+    backend = settings.storage_provider
 
     if backend == "s3":
         try:

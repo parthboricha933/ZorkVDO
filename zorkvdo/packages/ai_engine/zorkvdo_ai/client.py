@@ -1,8 +1,13 @@
 """Provider-agnostic AI client.
 
 The `AIClient` is the *only* surface business code uses. It dispatches
-to the configured backend (`MockProvider` by default; real providers
-are lazily imported when first used so the package stays light).
+to the configured backend. Supported providers:
+  - `mock`  — deterministic stub (dev/test, no key needed)
+  - `gemini` — Google Gemini via `google-genai` SDK
+
+Adding a new provider = implement the `AIProvider` protocol in
+`packages/ai_engine/zorkvdo_ai/providers/` and add a branch to
+`build_ai_client` below.
 """
 from __future__ import annotations
 
@@ -18,8 +23,8 @@ class AIClient:
     """High-level chat/vision client.
 
     Business code calls `chat()` or `vision()`; the client handles
-    retries, provider routing, and telemetry. Swapping providers is a
-    config change, not a code change.
+    provider routing. Swapping providers is a config change, not a
+    code change.
     """
 
     def __init__(self, provider: AIProvider, *, default_model: str | None = None) -> None:
@@ -72,35 +77,14 @@ class AIClient:
 def build_ai_client(settings: Any) -> AIClient:
     """Factory that picks a provider based on settings.ai_provider.
 
-    Real providers are imported lazily — `import ultralytics` etc. only
-    happens when the provider is actually used.
+    Real providers are imported lazily so the backend can boot without
+    `google-genai` installed — Gemini is only loaded if `AI_PROVIDER=gemini`.
     """
-    name = (settings.ai_provider or "mock").lower()
+    name = getattr(settings, "ai_provider", "mock") or "mock"
 
     if name == "mock":
         from .providers.mock import MockProvider
         return AIClient(MockProvider(default_model="mock-1"))
-
-    if name == "openai":
-        from .providers.openai import OpenAIProvider
-        return AIClient(
-            OpenAIProvider(
-                api_key=settings.openai_api_key.get_secret_value(),
-                base_url=settings.openai_base_url,
-                chat_model=settings.openai_chat_model,
-                vision_model=settings.openai_vision_model,
-            )
-        )
-
-    if name == "anthropic":
-        from .providers.anthropic import AnthropicProvider
-        return AIClient(
-            AnthropicProvider(
-                api_key=settings.anthropic_api_key.get_secret_value(),
-                base_url=settings.anthropic_base_url,
-                chat_model=settings.anthropic_chat_model,
-            )
-        )
 
     if name == "gemini":
         from .providers.gemini import GeminiProvider
@@ -111,4 +95,6 @@ def build_ai_client(settings: Any) -> AIClient:
             )
         )
 
-    raise ValueError(f"unknown ai_provider: {name}")
+    raise ValueError(
+        f"unknown AI_PROVIDER: {name!r}. Supported: 'mock' | 'gemini'."
+    )
