@@ -124,13 +124,18 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 async def get_current_user_id(
+    settings: SettingsDep,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
     authorization: str | None = Header(default=None),
 ) -> str:
     """Resolve the user_id from the Firebase ID token in the Authorization header.
 
+    In DEMO_MODE (default for dev), requests without an Authorization header
+    are treated as a shared "demo-user" identity so the full product flow
+    can be tested without Firebase Auth setup.
+
     Raises AuthError if:
-      - No bearer token is present
+      - DEMO_MODE is off AND no bearer token is present
       - firebase-admin is not configured (no service-account JSON)
       - The token is malformed, expired, or revoked
     """
@@ -139,11 +144,24 @@ async def get_current_user_id(
         token = creds.credentials
     elif authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
+
+    # Demo mode: no token → use shared demo user
     if not token:
+        if settings.demo_mode:
+            demo_uid = "demo-user"
+            _firebase_user_stash[demo_uid] = FirebaseUser(
+                uid=demo_uid,
+                email="demo@zorkvdo.app",
+                email_verified=True,
+                name="Demo Creator",
+                picture=None,
+                provider="demo",
+                raw_claims={"demo": True},
+            )
+            return demo_uid
         raise AuthError("missing bearer token")
 
     # firebase-admin's verify_id_token is synchronous — run in a thread
-    # so the event loop isn't blocked.
     user: FirebaseUser = await asyncio.to_thread(verify_firebase_token, token)
 
     # Stash for /auth/sync and other routes that need full claims

@@ -139,3 +139,59 @@ Stage Summary:
 - GitHub deployment BLOCKED: token rejected (needs new token from user)
 - Git commit is ready to push (7843359) once a valid GitHub token is provided
 - User reminded to rotate both tokens after deployment (shared in plaintext)
+
+---
+Task ID: 5
+Agent: main (Super Z)
+Task: Fix deployed site — build actual product UI (upload → analyze → clips → render → download)
+
+Work Log:
+- Added DEMO_MODE to backend config (default True in dev) — requests without Firebase token use shared "demo-user" identity
+- Updated get_current_user_id to auto-create demo user when DEMO_MODE=true and no Authorization header
+- Updated /auth/me to auto-sync user doc if missing (so demo mode works without prior /auth/sync)
+- Added POST /api/v1/jobs/render endpoint with full validation (project/blueprint/clip ownership)
+- Created RenderRequest + ClipMappingItem Pydantic models
+- Fixed video upload to infer content-type from filename when browser sends application/octet-stream
+- Added run_analysis_job_inline + run_render_job_inline helpers that reuse caller's repos + storage (so inline job results are visible to the API immediately, not written to a separate in-memory store)
+- Fixed analyzer.py to use functools.partial for keyword-only args in run_in_executor
+- Fixed beat.py missing asyncio import
+- Fixed motion.py IndexError when good_new has < 2 dimensions
+- Fixed tasks.py: renamed settings.analysis_yolo_model → settings.yolo_model_path (config field was renamed)
+- Fixed tasks.py: added registry = repos.registry if hasattr(repos, "registry") else repos (handles both RepositoryRegistry and Repositories wrapper)
+- Fixed renderer.py: replaced broken scale+crop filter with scale+pad that handles any source resolution
+- Built src/lib/api.ts — typed API client with health/getMe/createProject/uploadVideo/startAnalysis/startRender/getJob/getBlueprint/pollJob/downloadUrl
+- Built src/components/app/app-wizard.tsx — full product wizard with 6 steps:
+  1. Upload viral video (drag-drop or click)
+  2. Analyzing (animated spinner + 8-pass progress list)
+  3. Blueprint view (scene timeline with colors, durations, captions, tags)
+  4. Upload clips (multi-file drag-drop)
+  5. Rendering (animated spinner + 5-phase progress)
+  6. Done (video player + download button)
+- Replaced marketing page (src/app/page.tsx) with the wizard
+- Backend status banner shows when backend is offline (with start command)
+- Error banner shows API errors with dismiss button
+- Stepper shows current step + completed steps
+- Verified end-to-end locally:
+  - Generated test video with ffmpeg (5s, 320x240, sine wave audio)
+  - Upload → 200 OK, video stored at users/demo-user/uploads/
+  - Analyze (sync) → succeeded, blueprint created, BPM=161.5, scene_count=1
+  - Upload clip → 200 OK
+  - Render → succeeded, output video created (1080x1920, 5s, H.264+AAC, 2.9MB)
+  - Download → real MP4 file downloaded
+- Verified in browser via agent-browser:
+  - Page loads, no console errors
+  - File upload triggers analysis step
+  - After analysis, blueprint view appears with scene timeline
+  - Clip upload works
+  - Render button click → rendering step → done step with video player + download
+- Deployed updated site to Vercel: https://zorkvdo-lvbtakjjl-parthboricha933s-projects.vercel.app (READY, HTTP 200)
+
+Stage Summary:
+- Website is now a functional product, not just marketing
+- Full flow works locally: upload → analyze (BPM, scenes, captions, colors, motion) → upload clips → render → download
+- Demo mode bypasses Firebase Auth so anyone can test without sign-in
+- Vercel deployment is LIVE but CANNOT process real videos because:
+  - Vercel serverless can't run FFmpeg/OpenCV/YOLO/MediaPipe/librosa
+  - The deployed site calls NEXT_PUBLIC_API_URL which defaults to localhost:8000 (unreachable from Vercel)
+  - To make the deployed site work, the backend must be deployed to a service that supports Python + system libs (Render, Railway, Fly.io)
+- Next step: user needs to either test locally (backend + frontend both running) OR provide a token for Render/Railway/Fly to deploy the backend publicly

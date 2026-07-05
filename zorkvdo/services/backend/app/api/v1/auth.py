@@ -24,8 +24,17 @@ async def me(
     uid: CurrentUserId,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> UserPublic:
-    """Return the current user's profile. Verifies the Firebase token via the dependency."""
-    return await auth_service.get_user_public(uid)
+    """Return the current user's profile. Auto-syncs in demo mode."""
+    from app.api.deps import _last_firebase_user
+    try:
+        return await auth_service.get_user_public(uid)
+    except Exception:
+        # User doc doesn't exist yet — sync from Firebase claims (or demo)
+        user = _last_firebase_user(uid)
+        if user:
+            return await auth_service.sync_user(user)
+        from app.core.exceptions import NotFoundError
+        raise NotFoundError("user not found")
 
 
 @router.post("/sync", response_model=SyncResponse)

@@ -39,6 +39,41 @@ async def run_analysis_job(
     settings = get_settings()
     repos = build_repositories(settings)
     storage = build_storage(settings)
+    return await _run_analysis_impl(job_id, video_id, owner_id, blueprint_name, settings, repos, storage)
+
+
+async def run_analysis_job_inline(
+    job_id: str,
+    video_id: str,
+    owner_id: str,
+    blueprint_name: str,
+    *,
+    repos,
+    storage,
+) -> dict:
+    """Inline version that reuses the caller's repos + storage (no new
+    in-memory store). Used by the /jobs/analyze?sync=true endpoint so the
+    job results are visible to the API immediately.
+    """
+    configure_logging(level="INFO")
+    bind_task(job_id)
+    log.info("analysis_job_start_inline", job_id=job_id, video_id=video_id)
+    settings = get_settings()
+    return await _run_analysis_impl(job_id, video_id, owner_id, blueprint_name, settings, repos, storage)
+
+
+async def _run_analysis_impl(
+    job_id: str,
+    video_id: str,
+    owner_id: str,
+    blueprint_name: str,
+    settings,
+    repos,
+    storage,
+) -> dict:
+    """Shared implementation between the Celery task and the inline runner."""
+    # repos may be a RepositoryRegistry (inline) or Repositories wrapper (Celery)
+    registry = repos.registry if hasattr(repos, "registry") else repos
 
     # Mark job running
     jobs_repo = repos.get("jobs")
@@ -70,7 +105,7 @@ async def run_analysis_job(
                 scene_threshold=settings.analysis_scene_threshold,
                 sample_fps=settings.analysis_sample_fps,
                 ocr_languages=settings.analysis_ocr_languages.split(","),
-                yolo_model=settings.analysis_yolo_model,
+                yolo_model=settings.yolo_model_path,
                 enable_face=settings.analysis_enable_face,
                 enable_pose=settings.analysis_enable_pose,
                 max_video_seconds=settings.analysis_max_video_seconds,
@@ -90,7 +125,7 @@ async def run_analysis_job(
 
         # Persist blueprint
         from app.services.blueprint_service import BlueprintService
-        bp_service = BlueprintService(repos.registry)
+        bp_service = BlueprintService(registry)
         await bp_service.save(owner_id, result.blueprint)
 
         # Update video metadata with probe results
@@ -117,7 +152,7 @@ async def run_analysis_job(
 
         # Notify the user
         from app.services.user_service import UserService
-        user_svc = UserService(repos.registry)
+        user_svc = UserService(registry)
         await user_svc.create_notification(
             owner_id,
             kind="success",
@@ -167,7 +202,7 @@ async def run_match_clips_job(
     await jobs_repo.put(job_id, job_doc)
 
     try:
-        bp_service = BlueprintService(repos.registry)
+        bp_service = BlueprintService(registry)
         blueprint = await bp_service.get_raw(blueprint_id)
 
         # Resolve clip paths
@@ -236,21 +271,59 @@ async def run_render_job(
     quality: str,
     aspect_ratio: str | None,
 ) -> dict:
-    """Render a final video from a blueprint + user clips.
-
-    The actual FFmpeg pipeline lives in `app.workers.renderer`. Here we
-    orchestrate: download clips → invoke renderer → upload output →
-    create output Video entity → mark job done.
-    """
-    from app.services.blueprint_service import BlueprintService
-    from app.services.video_service import VideoService
-    from app.workers.renderer import render_video
-
+    """Render a final video from a blueprint + user clips (Celery entry)."""
     configure_logging(level="INFO")
     bind_task(job_id)
     settings = get_settings()
     repos = build_repositories(settings)
     storage = build_storage(settings)
+    return await _run_render_impl(
+        job_id, project_id, owner_id, blueprint_id, clip_mapping,
+        quality, aspect_ratio, settings, repos, storage,
+    )
+
+
+async def run_render_job_inline(
+    job_id: str,
+    project_id: str,
+    owner_id: str,
+    blueprint_id: str,
+    clip_mapping: list[dict],
+    quality: str,
+    aspect_ratio: str | None,
+    *,
+    repos,
+    storage,
+) -> dict:
+    """Inline render — reuses caller's repos + storage."""
+    configure_logging(level="INFO")
+    bind_task(job_id)
+    settings = get_settings()
+    return await _run_render_impl(
+        job_id, project_id, owner_id, blueprint_id, clip_mapping,
+        quality, aspect_ratio, settings, repos, storage,
+    )
+
+
+async def _run_render_impl(
+    job_id: str,
+    project_id: str,
+    owner_id: str,
+    blueprint_id: str,
+    clip_mapping: list[dict],
+    quality: str,
+    aspect_ratio: str | None,
+    settings,
+    repos,
+    storage,
+) -> dict:
+    """Shared render implementation."""
+    from app.services.blueprint_service import BlueprintService
+    from app.services.video_service import VideoService
+    from app.workers.renderer import render_video
+
+    # repos may be a RepositoryRegistry (inline) or Repositories wrapper (Celery)
+    registry = repos.registry if hasattr(repos, "registry") else repos
 
     jobs_repo = repos.get("jobs")
     job_doc = await jobs_repo.get(job_id) or {}
@@ -259,7 +332,7 @@ async def run_render_job(
     await jobs_repo.put(job_id, job_doc)
 
     try:
-        bp_service = BlueprintService(repos.registry)
+        bp_service = BlueprintService(registry)
         blueprint = await bp_service.get_raw(blueprint_id)
 
         # Resolve + download clips
@@ -287,7 +360,7 @@ async def run_render_job(
             )
 
             # Upload the rendered file
-            video_svc = VideoService(repos.registry, storage, settings)
+            video_svc = VideoService(registry, storage, settings)
             with open(output_path, "rb") as f:
                 video_pub = await video_svc.upload(
                     owner_id=owner_id,
@@ -329,7 +402,7 @@ async def run_render_job(
 
         # Notify
         from app.services.user_service import UserService
-        user_svc = UserService(repos.registry)
+        user_svc = UserService(registry)
         await user_svc.create_notification(
             owner_id,
             kind="success",

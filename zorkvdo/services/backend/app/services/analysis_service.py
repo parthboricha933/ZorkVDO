@@ -40,7 +40,7 @@ class AnalysisService:
                 scene_threshold=settings.analysis_scene_threshold,
                 sample_fps=settings.analysis_sample_fps,
                 ocr_languages=settings.analysis_ocr_languages.split(","),
-                yolo_model=settings.analysis_yolo_model,
+                yolo_model=settings.yolo_model_path,
                 enable_face=settings.analysis_enable_face,
                 enable_pose=settings.analysis_enable_pose,
                 max_video_seconds=settings.analysis_max_video_seconds,
@@ -82,10 +82,17 @@ class AnalysisService:
         await self.repos.get("jobs").put(job_id, job_doc)
 
         if sync:
-            # Run inline (dev/test only). Useful for small clips and tests.
-            from app.workers.tasks import run_analysis_job
-            await run_analysis_job(job_id, video_id, owner_id, blueprint_name)
+            # Run inline (dev/test only). Pass the existing repos so the
+            # worker writes to the same in-memory store the API reads from.
+            from app.workers.tasks import run_analysis_job_inline
+            await run_analysis_job_inline(
+                job_id, video_id, owner_id, blueprint_name,
+                repos=self.repos,
+                storage=self.storage,
+            )
             doc = await self.repos.get("jobs").get(job_id)
+            if doc is None:
+                raise RuntimeError("job doc missing after inline run")
             return JobPublic(**doc)
 
         # Enqueue Celery task

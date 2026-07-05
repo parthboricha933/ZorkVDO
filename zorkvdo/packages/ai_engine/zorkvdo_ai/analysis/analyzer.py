@@ -105,10 +105,11 @@ class VideoAnalyzer:
             )
 
         # 2. Run CV/audio passes in a thread pool (they're synchronous, CPU-bound)
+        import functools
         loop = asyncio.get_running_loop()
         scene_signals, motion_signals, beat_signals, color_signals, object_signals = (
             await asyncio.gather(
-                loop.run_in_executor(None, self.scene.analyze, path, probe.stats.duration_seconds),
+                loop.run_in_executor(None, functools.partial(self.scene.analyze, path, duration_seconds=probe.stats.duration_seconds)),
                 loop.run_in_executor(None, self.motion.analyze, path),
                 loop.run_in_executor(None, self.beat.analyze, path),
                 loop.run_in_executor(None, self.color.analyze, path),

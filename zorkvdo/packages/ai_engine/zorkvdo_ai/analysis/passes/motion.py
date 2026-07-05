@@ -76,7 +76,7 @@ class MotionAnalyzer:
                     if next_pts is not None and status is not None:
                         good_old = prev_pts[status.flatten() == 1]
                         good_new = next_pts[status.flatten() == 1]
-                        if len(good_old) >= 8:
+                        if len(good_old) >= 8 and good_new.ndim == 2 and good_new.shape[1] >= 2:
                             dx = float(np.mean(good_new[:, 0] - good_old[:, 0]))
                             dy = float(np.mean(good_new[:, 1] - good_old[:, 1]))
                             # Zoom: radial divergence from frame centre

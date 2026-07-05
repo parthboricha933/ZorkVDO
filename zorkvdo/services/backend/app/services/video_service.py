@@ -52,6 +52,14 @@ class VideoService:
                 "file too large",
                 details={"max_bytes": self.settings.upload_max_bytes},
             )
+
+        # If the content type is generic, try to infer from filename extension
+        if content_type in ("application/octet-stream", ""):
+            import mimetypes
+            inferred = mimetypes.guess_type(filename)[0]
+            if inferred:
+                content_type = inferred
+
         allowed = self.settings.allowed_video_mimes
         if content_type not in allowed:
             raise ValidationError(

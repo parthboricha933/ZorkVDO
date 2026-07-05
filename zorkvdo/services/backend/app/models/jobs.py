@@ -21,9 +21,21 @@ class JobPublic(BaseModel):
     updated_at: str
 
 
+class ClipMappingItem(BaseModel):
+    """One entry in the render clip mapping."""
+
+    scene_index: int
+    clip_id: str
+    suggested_start: float = 0.0
+    suggested_end: float | None = None
+
+
 class RenderRequest(BaseModel):
+    """Body for POST /jobs/render."""
+
     project_id: str
-    output_format: str = "mp4"
+    blueprint_id: str
+    clip_mapping: list[ClipMappingItem]
     quality: str = "high"  # low | medium | high
     aspect_ratio: str | None = None  # e.g. "9:16", "16:9", "1:1"
     blueprint_overrides: dict[str, Any] = {}

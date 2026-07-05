@@ -149,13 +149,22 @@ async def _trim_and_scale(
     scene,
 ) -> None:
     """Trim a clip to [start, start+duration] and scale to target dims."""
-    # Build filter chain: scale + crop to exact dimensions + apply zoom factor
+    # Build filter chain that handles any source resolution:
+    # 1. Scale to fit within target dims (preserving aspect ratio)
+    # 2. Pad to exact target dims (centered, black bars)
+    # 3. Force sample aspect ratio = 1
     zoom = scene.zoom_factor if scene.zoom_factor > 1.0 else 1.0
-    # Crop center, then scale
-    filter_complex = (
-        f"scale={width * zoom // 1 if zoom > 1 else width}:-2,"
-        f"crop={width}:{height},setsar=1"
-    )
+    if zoom > 1.0:
+        # Apply zoom by upscaling first
+        filter_complex = (
+            f"scale={int(width * zoom)}:{int(height * zoom)}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},setsar=1"
+        )
+    else:
+        filter_complex = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+        )
 
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",

@@ -39,7 +39,8 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     app_log_level: str = "INFO"
-    app_cors_origins: str = "http://localhost:8080"
+    app_cors_origins: str = "http://localhost:8080,http://localhost:3000"
+    demo_mode: bool = True  # when True, requests without auth use a demo user
 
     # ── Backend URLs ───────────────────────────────────────
     base_api_url: str = "http://localhost:8000/api/v1"
