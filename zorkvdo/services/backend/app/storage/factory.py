@@ -28,10 +28,16 @@ def build_storage(settings: Settings) -> Storage:
             log.warning("s3_storage_unavailable_falling_back", error=str(e))
 
     if backend == "firebase":
-        # Placeholder: Firebase Storage backend uses the same SDK as Firestore.
-        # Implementation deferred until FIREBASE_PROJECT_ID is provided.
-        log.warning("firebase_storage_not_implemented_using_local")
-        return LocalStorage(root=settings.storage_local_root, bucket=settings.storage_bucket)
+        try:
+            from app.storage.firebase import FirebaseStorage
 
-    # default
+            return FirebaseStorage(
+                bucket_name=settings.firebase_storage_bucket or f"{settings.firebase_project_id}.firebasestorage.app",
+                credentials_path=settings.firebase_credentials_path,
+                project_id=settings.firebase_project_id,
+            )
+        except Exception as e:
+            log.warning("firebase_storage_unavailable_falling_back", error=str(e))
+
+    # default / fallback
     return LocalStorage(root=settings.storage_local_root, bucket=settings.storage_bucket)

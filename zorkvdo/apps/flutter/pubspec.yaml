@@ -1,0 +1,81 @@
+name: zorkvdo
+description: ZorkVDO — Create Viral Videos from Any Inspiration. AI-powered viral video blueprint generator.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+  flutter: ">=3.27.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: ^3.8.1
+  firebase_auth: ^5.3.4
+  cloud_firestore: ^5.5.1
+  firebase_storage: ^12.3.7
+  firebase_messaging: ^15.1.6
+  firebase_analytics: ^11.3.6
+  firebase_crashlytics: ^4.1.7
+
+  # State management
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Routing
+  go_router: ^14.6.2
+
+  # Networking
+  dio: ^5.7.0
+  http: ^1.2.2
+
+  # Media
+  image_picker: ^1.1.2
+  video_player: ^2.9.2
+  file_picker: ^8.1.6
+  chewie: ^1.8.5
+
+  # Storage
+  shared_preferences: ^2.3.3
+
+  # UI
+  cupertino_icons: ^1.0.8
+  google_fonts: ^6.2.1
+  flutter_svg: ^2.0.17
+  cached_network_image: ^3.4.1
+  shimmer: ^3.0.0
+  fl_chart: ^0.69.2
+
+  # Utils
+  intl: ^0.19.0
+  uuid: ^4.5.1
+  path: ^1.9.0
+  logger: ^2.5.0
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.14
+  riverpod_generator: ^2.6.3
+  freezed: ^2.5.7
+  json_serializable: ^6.9.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.ttf
+        - asset: assets/fonts/Inter-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-Bold.ttf
+          weight: 700

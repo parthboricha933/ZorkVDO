@@ -53,6 +53,7 @@ dependencies = [
 ai = [
     "ultralytics>=8.1.0",
     "mediapipe>=0.10.9",
+    "easyocr>=1.7.0",
 ]
 dev = [
     "pytest>=8.0.0",

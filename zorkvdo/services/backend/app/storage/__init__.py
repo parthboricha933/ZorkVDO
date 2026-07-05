@@ -1,9 +1,9 @@
 """Storage abstractions for user uploads (videos, clips, thumbnails).
 
 Backends:
-  - `local`  → filesystem (default for dev/tests)
-  - `s3`     → S3 / MinIO via boto3
-  - `firebase` → Firebase Storage (placeholder; activated when configured)
+  - `local`    → filesystem (default for dev/tests)
+  - `s3`       → S3 / MinIO via boto3
+  - `firebase` → Firebase Storage via firebase-admin
 
 The backend is selected via `STORAGE_PROVIDER` in env. Each backend
 implements the same `Storage` protocol so business logic doesn't care.
