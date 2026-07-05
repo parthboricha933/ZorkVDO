@@ -40,10 +40,12 @@ class Settings(BaseSettings):
 
     # ── Security / JWT ─────────────────────────────────────
     jwt_secret: SecretStr = SecretStr("CHANGE_ME_TO_A_64_CHAR_RANDOM_HEX_STRING")
+    jwt_refresh_secret: SecretStr = SecretStr("CHANGE_ME_REFRESH_SECRET")
     jwt_algorithm: str = "HS256"
     jwt_access_ttl_minutes: int = 30
     jwt_refresh_ttl_days: int = 14
     password_min_length: int = 8
+    encryption_key: SecretStr = SecretStr("")
 
     # ── Storage ────────────────────────────────────────────
     storage_backend: StorageBackend = "local"
@@ -59,6 +61,11 @@ class Settings(BaseSettings):
     database_backend: Backend = "memory"
     firebase_project_id: str = ""
     firebase_credentials_path: str = "./firebase-service-account.json"
+
+    # ── Firebase (client SDK config from google-services.json) ──
+    firebase_api_key: str = ""
+    firebase_app_id: str = ""
+    firebase_messaging_sender_id: str = ""
 
     # ── Celery / Redis ─────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"

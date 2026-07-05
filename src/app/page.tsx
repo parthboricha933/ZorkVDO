@@ -6,6 +6,7 @@ import { Features } from "@/components/site/features";
 import { Templates } from "@/components/site/templates";
 import { DashboardPreview } from "@/components/site/dashboard-preview";
 import { Pricing } from "@/components/site/pricing";
+import { DeveloperSettings } from "@/components/site/developer-settings";
 import { CTASection } from "@/components/site/cta-section";
 import { SiteFooter } from "@/components/site/site-footer";
 
@@ -21,6 +22,7 @@ export default function Home() {
         <Templates />
         <DashboardPreview />
         <Pricing />
+        <DeveloperSettings />
         <CTASection />
       </main>
       <SiteFooter />

@@ -34,6 +34,7 @@ from app.api.v1 import (  # noqa: E402
     health,
     jobs,
     projects,
+    status,
     templates,
     users,
     videos,
@@ -163,6 +164,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router, prefix=api_prefix)
     app.include_router(jobs.router, prefix=api_prefix)
     app.include_router(feedback.router, prefix=api_prefix)
+    app.include_router(status.router, prefix=api_prefix)
 
     @app.get("/")
     async def root() -> dict:
