@@ -73,22 +73,47 @@ def _get_firebase_app() -> Any:
         return _firebase_app
 
     cred = None
-    creds_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "")
-    if creds_path and Path(creds_path).exists():
-        cred = credentials.Certificate(creds_path)
-    elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+
+    # ── Priority 1: FIREBASE_CREDENTIALS_BASE64 env var ────────────────
+    # Base64-encoded service account JSON — works without a volume mount.
+    # Generate with:  base64 -w0 firebase-service-account.json
+    creds_b64 = os.environ.get("FIREBASE_CREDENTIALS_BASE64", "")
+    if creds_b64:
+        import base64
+        import tempfile
+        try:
+            creds_json = base64.b64decode(creds_b64)
+            # Write to a temp file so firebase-admin can read it
+            tmp = tempfile.NamedTemporaryFile(
+                mode="wb", suffix=".json", delete=False
+            )
+            tmp.write(creds_json)
+            tmp.close()
+            cred = credentials.Certificate(tmp.name)
+            log.info("firebase_credentials_loaded_from_base64")
+        except Exception as e:
+            log.warning("firebase_credentials_base64_decode_failed", error=str(e))
+
+    # ── Priority 2: FIREBASE_CREDENTIALS_PATH file on disk ─────────────
+    if cred is None:
+        creds_path = os.environ.get("FIREBASE_CREDENTIALS_PATH", "")
+        if creds_path and Path(creds_path).exists():
+            cred = credentials.Certificate(creds_path)
+            log.info("firebase_credentials_loaded_from_path", path=creds_path)
+
+    # ── Priority 3: GOOGLE_APPLICATION_CREDENTIALS ─────────────────────
+    if cred is None and os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         cred = credentials.ApplicationDefault()
-    else:
-        # No credentials available — Firebase Auth cannot verify tokens.
-        # The rest of the backend still works (in-memory DB, local storage),
-        # but every authenticated endpoint will 401 until creds are dropped in.
+
+    # ── No credentials available ───────────────────────────────────────
+    if cred is None:
         log.warning(
             "firebase_auth_not_configured",
-            hint="Drop firebase-service-account.json at FIREBASE_CREDENTIALS_PATH",
+            hint="Set FIREBASE_CREDENTIALS_BASE64 env var (base64-encoded service account JSON)",
         )
         raise AuthError(
-            "Firebase Auth not configured. Drop a service-account JSON at "
-            "FIREBASE_CREDENTIALS_PATH and restart the backend."
+            "Firebase Auth not configured. Set FIREBASE_CREDENTIALS_BASE64 env var "
+            "with the base64-encoded service account JSON."
         )
 
     project_id = os.environ.get("FIREBASE_PROJECT_ID", "")

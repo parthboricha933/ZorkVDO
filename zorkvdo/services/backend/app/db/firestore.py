@@ -104,22 +104,40 @@ def _init_firestore(project_id: str, credentials_path: str) -> Any:
         ) from e
 
     import os
+    import base64
+    import tempfile
     from pathlib import Path
 
     if firebase_admin._apps.get("[DEFAULT]"):  # type: ignore[attr-defined]
         return firestore.client()
 
     cred = None
-    if credentials_path and Path(credentials_path).exists():
+
+    # Priority 1: FIREBASE_CREDENTIALS_BASE64 env var
+    creds_b64 = os.environ.get("FIREBASE_CREDENTIALS_BASE64", "")
+    if creds_b64:
+        try:
+            creds_json = base64.b64decode(creds_b64)
+            tmp = tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False)
+            tmp.write(creds_json)
+            tmp.close()
+            cred = credentials.Certificate(tmp.name)
+        except Exception as e:
+            log.warning("firestore_credentials_base64_failed", error=str(e))
+
+    # Priority 2: FIREBASE_CREDENTIALS_PATH file
+    if cred is None and credentials_path and Path(credentials_path).exists():
         cred = credentials.Certificate(credentials_path)
-    elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+
+    # Priority 3: GOOGLE_APPLICATION_CREDENTIALS
+    if cred is None and os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         cred = credentials.ApplicationDefault()
-    else:
+
+    if cred is None:
         raise AppError(
             "firebase credentials missing",
             details={
-                "expected_path": credentials_path,
-                "hint": "set FIREBASE_CREDENTIALS_PATH or GOOGLE_APPLICATION_CREDENTIALS",
+                "hint": "set FIREBASE_CREDENTIALS_BASE64 env var (base64-encoded service account JSON)",
             },
         )
 

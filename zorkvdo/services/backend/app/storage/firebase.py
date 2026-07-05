@@ -26,11 +26,10 @@ class FirebaseStorage(Storage):
     backend = "firebase"
 
     def __init__(self, *, bucket_name: str, credentials_path: str, project_id: str) -> None:
-        if not credentials_path or not Path(credentials_path).exists():
-            raise StorageError(
-                "firebase credentials missing for storage",
-                details={"expected_path": credentials_path},
-            )
+        import os
+        import base64
+        import tempfile
+
         try:
             import firebase_admin
             from firebase_admin import credentials
@@ -38,7 +37,30 @@ class FirebaseStorage(Storage):
             raise StorageError("firebase-admin not installed") from e
 
         if not firebase_admin._apps.get("[DEFAULT]"):  # type: ignore[attr-defined]
-            cred = credentials.Certificate(credentials_path)
+            cred = None
+
+            # Priority 1: FIREBASE_CREDENTIALS_BASE64 env var
+            creds_b64 = os.environ.get("FIREBASE_CREDENTIALS_BASE64", "")
+            if creds_b64:
+                try:
+                    creds_json = base64.b64decode(creds_b64)
+                    tmp = tempfile.NamedTemporaryFile(mode="wb", suffix=".json", delete=False)
+                    tmp.write(creds_json)
+                    tmp.close()
+                    cred = credentials.Certificate(tmp.name)
+                except Exception as e:
+                    log.warning("firebase_storage_b64_failed", error=str(e))
+
+            # Priority 2: credentials_path file
+            if cred is None and credentials_path and Path(credentials_path).exists():
+                cred = credentials.Certificate(credentials_path)
+
+            if cred is None:
+                raise StorageError(
+                    "firebase credentials missing for storage",
+                    details={"hint": "set FIREBASE_CREDENTIALS_BASE64 env var"},
+                )
+
             firebase_admin.initialize_app(cred, {
                 "projectId": project_id,
                 "storageBucket": bucket_name,
