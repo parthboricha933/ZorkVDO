@@ -346,8 +346,44 @@ async def _run_render_impl(
         bp_service = BlueprintService(registry)
         blueprint = await bp_service.get_raw(blueprint_id)
 
+        # Extract audio from the SOURCE video (for song reuse)
+        source_audio_path = None
+        source_video_id = blueprint.meta.source_video_id
+        if source_video_id:
+            source_doc = await clips_repo.get(source_video_id) if hasattr(clips_repo, 'get') else None
+            # Actually, source video is in the same videos collection
+            source_doc = await repos.get("videos").get(source_video_id)
+            if source_doc:
+                try:
+                    src_data = await storage.get(source_doc["storage_key"])
+                    src_suffix = Path(source_doc["filename"]).suffix or ".mp4"
+                    src_tmp = tempfile.NamedTemporaryFile(suffix=src_suffix, delete=False)
+                    src_tmp.write(src_data)
+                    src_tmp.close()
+
+                    # Extract audio
+                    audio_tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    audio_tmp.close()
+                    audio_extract = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-y", "-loglevel", "warning",
+                        "-i", src_tmp.name,
+                        "-vn", "-acodec", "libmp3lame", "-ab", "128k",
+                        audio_tmp.name,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    await audio_extract.communicate()
+                    if audio_extract.returncode == 0:
+                        source_audio_path = audio_tmp.name
+                        log.info("source_audio_extracted", job_id=job_id)
+                    try:
+                        Path(src_tmp.name).unlink()
+                    except OSError:
+                        pass
+                except Exception as e:
+                    log.warning("source_audio_extract_failed", error=str(e))
+
         # Resolve + download clips
-        clips_repo = repos.get("videos")
         clip_paths: dict[str, str] = {}  # clip_id → local path
         for mapping in clip_mapping:
             cid = mapping["clip_id"]
@@ -368,6 +404,7 @@ async def _run_render_impl(
                 clip_paths=clip_paths,
                 quality=quality,
                 aspect_ratio=aspect_ratio,
+                source_audio_path=source_audio_path,
             )
 
             # Upload the rendered file
@@ -385,6 +422,11 @@ async def _run_render_impl(
             for p in clip_paths.values():
                 try:
                     Path(p).unlink()
+                except OSError:
+                    pass
+            if source_audio_path:
+                try:
+                    Path(source_audio_path).unlink()
                 except OSError:
                     pass
             try:

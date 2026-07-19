@@ -33,6 +33,7 @@ export interface VideoPublic {
   height: number | null;
   fps: number | null;
   analysis_id: string | null;
+  is_image: boolean;
   created_at: string;
   updated_at: string;
 }

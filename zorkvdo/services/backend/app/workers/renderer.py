@@ -51,8 +51,15 @@ async def render_video(
     clip_paths: dict[str, str],
     quality: str = "high",
     aspect_ratio: str | None = None,
+    source_audio_path: str | None = None,
 ) -> str:
-    """Render the final video. Returns path to the output MP4."""
+    """Render the final video. Returns path to the output MP4.
+
+    Args:
+        source_audio_path: If provided, this audio file is muxed into the
+            output instead of a silent track (extracted from the original
+            viral video).
+    """
     if not clip_mapping:
         raise ValueError("no clip mapping provided")
 
@@ -90,16 +97,29 @@ async def render_video(
                 continue
 
             seg_path = str(workdir / f"scene_{scene_idx:03d}.mp4")
-            await _trim_and_scale(
-                src_path=src_path,
-                dst_path=seg_path,
-                start=max(0.0, start),
-                duration=max(0.1, end - start),
-                width=width,
-                height=height,
-                bitrate_v=bitrate_v,
-                scene=scene,
-            )
+
+            # Check if this is an image file (convert to video with Ken Burns)
+            is_image = src_path.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp"))
+            if is_image:
+                await _image_to_video(
+                    image_path=src_path,
+                    dst_path=seg_path,
+                    duration=max(0.5, end - start),
+                    width=width,
+                    height=height,
+                    bitrate_v=bitrate_v,
+                )
+            else:
+                await _trim_and_scale(
+                    src_path=src_path,
+                    dst_path=seg_path,
+                    start=max(0.0, start),
+                    duration=max(0.1, end - start),
+                    width=width,
+                    height=height,
+                    bitrate_v=bitrate_v,
+                    scene=scene,
+                )
             segment_paths.append(seg_path)
 
         if not segment_paths:
@@ -109,7 +129,13 @@ async def render_video(
         concat_list = workdir / "concat.txt"
         concat_list.write_text("\n".join(f"file '{p}'" for p in segment_paths))
         output_path = str(workdir / "output.mp4")
-        await _concat(concat_list_path=str(concat_list), output_path=output_path, bitrate_v=bitrate_v, bitrate_a=bitrate_a)
+        await _concat(
+            concat_list_path=str(concat_list),
+            output_path=output_path,
+            bitrate_v=bitrate_v,
+            bitrate_a=bitrate_a,
+            audio_path=source_audio_path,
+        )
 
         # If the blueprint has captions, burn them in via drawtext
         captions = [
@@ -136,6 +162,46 @@ async def render_video(
         import shutil
         shutil.rmtree(workdir, ignore_errors=True)
         raise
+
+
+async def _image_to_video(
+    *,
+    image_path: str,
+    dst_path: str,
+    duration: float,
+    width: int,
+    height: int,
+    bitrate_v: int,
+) -> None:
+    """Convert a still image to a short video clip with Ken Burns zoom effect."""
+    filter = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+        f"zoompan=z='min(zoom+0.0015,1.5)':d={int(duration*30)}:s={width}x{height}:fps=30,setsar=1"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "warning",
+        "-loop", "1", "-i", image_path,
+        "-t", f"{duration:.3f}",
+        "-vf", filter,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-pix_fmt", "yuv420p",
+        "-r", "30",
+        "-an",
+        "-threads", "1",
+        dst_path,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err_msg = stderr.decode(errors='ignore')[:500] if stderr else "(no stderr)"
+        raise RuntimeError(f"ffmpeg image-to-video failed (exit {proc.returncode}): {err_msg}")
 
 
 async def _trim_and_scale(
@@ -198,25 +264,47 @@ async def _trim_and_scale(
 
 
 async def _concat(
-    *, concat_list_path: str, output_path: str, bitrate_v: int, bitrate_a: int
+    *, concat_list_path: str, output_path: str, bitrate_v: int, bitrate_a: int,
+    audio_path: str | None = None,
 ) -> None:
-    """Concatenate segments and add a silent audio track."""
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "warning",
-        "-f", "concat", "-safe", "0",
-        "-i", concat_list_path,
-        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "28",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", f"{bitrate_a}k",
-        "-shortest",
-        "-movflags", "+faststart",
-        "-threads", "1",
-        output_path,
-    ]
+    """Concatenate segments and add audio (original track or silent)."""
+    if audio_path and os.path.exists(audio_path):
+        # Use the original audio track from the viral video
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "warning",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-i", audio_path,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", f"{bitrate_a}k",
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-shortest",
+            "-movflags", "+faststart",
+            "-threads", "1",
+            output_path,
+        ]
+    else:
+        # No original audio — use silent track
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "warning",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", f"{bitrate_a}k",
+            "-shortest",
+            "-movflags", "+faststart",
+            "-threads", "1",
+            output_path,
+        ]
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,

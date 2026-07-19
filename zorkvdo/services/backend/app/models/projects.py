@@ -46,6 +46,7 @@ class VideoPublic(BaseModel):
     height: int | None = None
     fps: float | None = None
     analysis_id: str | None = None
+    is_image: bool = False
     created_at: str
     updated_at: str
 

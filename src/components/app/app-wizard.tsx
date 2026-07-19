@@ -450,6 +450,10 @@ function UploadStep({
         Demo mode is on — no sign-in required. Videos are processed locally and
         not stored permanently.
       </p>
+      <p className="mt-2 text-center text-xs text-amber-600/80">
+        ⚠️ Only upload videos you own or have rights to. The original audio
+        will be reused in your rendered video.
+      </p>
     </div>
   );
 }
@@ -544,14 +548,14 @@ function BlueprintStep({
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    // Accept files that are either:
-    // 1. Typed as video/* by the browser, OR
-    // 2. Have a video file extension (some browsers/OSes report empty type)
+    // Accept both video AND image files
     const videoExtensions = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
+    const imageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".bmp"];
+    const allExtensions = [...videoExtensions, ...imageExtensions];
     const valid = Array.from(files).filter((f) => {
-      if (f.type.startsWith("video/")) return true;
+      if (f.type.startsWith("video/") || f.type.startsWith("image/")) return true;
       const name = f.name.toLowerCase();
-      return videoExtensions.some((ext) => name.endsWith(ext));
+      return allExtensions.some((ext) => name.endsWith(ext));
     });
     if (valid.length > 0) {
       onUploadClips(valid);
@@ -675,12 +679,11 @@ function BlueprintStep({
           <input
             ref={inputRef}
             type="file"
-            accept="video/*,.mp4,.mov,.webm,.mkv,.avi,.m4v"
+            accept="video/*,image/*,.mp4,.mov,.webm,.mkv,.avi,.m4v,.jpg,.jpeg,.png,.webp,.bmp"
             multiple
             className="hidden"
             onChange={(e) => {
               handleFiles(e.target.files);
-              // Reset input so the same file can be selected again
               e.target.value = "";
             }}
           />
@@ -696,7 +699,10 @@ function BlueprintStep({
             <>
               <Upload className="h-6 w-6 text-zinc-400 mx-auto mb-2" />
               <p className="text-sm text-zinc-300">
-                Drop clips here or click to browse (multiple OK)
+                Drop videos or images here (multiple OK)
+              </p>
+              <p className="text-xs text-zinc-600 mt-1">
+                MP4, MOV, WebM, JPG, PNG, WebP
               </p>
             </>
           )}
@@ -709,7 +715,11 @@ function BlueprintStep({
                 key={clip.id}
                 className="flex items-center gap-2 rounded-lg border border-white/5 bg-white/[0.02] p-2 text-xs"
               >
-                <Film className="h-3.5 w-3.5 text-fuchsia-400 flex-shrink-0" />
+                {clip.is_image ? (
+                  <span className="text-amber-400 text-xs font-mono flex-shrink-0">IMG</span>
+                ) : (
+                  <Film className="h-3.5 w-3.5 text-fuchsia-400 flex-shrink-0" />
+                )}
                 <span className="flex-1 truncate text-zinc-300">
                   {clip.filename}
                 </span>

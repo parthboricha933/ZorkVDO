@@ -60,12 +60,16 @@ class VideoService:
             if inferred:
                 content_type = inferred
 
-        allowed = self.settings.allowed_video_mimes
+        # Accept both video AND image files (images are converted to clips)
+        allowed = self.settings.allowed_video_mimes | self.settings.allowed_image_mimes
         if content_type not in allowed:
             raise ValidationError(
                 "unsupported content type",
                 details={"allowed": sorted(allowed), "got": content_type},
             )
+
+        # Track whether this is an image (for renderer to convert)
+        is_image = content_type in self.settings.allowed_image_mimes
 
         vid = uuid.uuid4().hex
         ext = Path(filename).suffix or mimetypes.guess_extension(content_type) or ""
@@ -95,6 +99,7 @@ class VideoService:
             "height": None,
             "fps": None,
             "analysis_id": None,
+            "is_image": is_image,
             "created_at": now,
             "updated_at": now,
         }
