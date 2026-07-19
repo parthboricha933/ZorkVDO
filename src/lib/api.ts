@@ -61,6 +61,15 @@ export interface BlueprintScene {
   shot_type: string;
   camera_motion: string;
   zoom_factor: number;
+  effects: Array<{
+    type: string;
+    intensity: number;
+    duration: number;
+  }>;
+  transition_in: {
+    type: string;
+    duration: number;
+  };
   captions: Array<{
     text: string;
     start: number;

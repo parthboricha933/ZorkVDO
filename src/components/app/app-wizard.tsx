@@ -605,19 +605,40 @@ function BlueprintStep({
               <div className="flex-1 min-w-0">
                 <div className="text-xs text-zinc-300 truncate">
                   {scene.shot_type} · {scene.camera_motion}
+                  {scene.zoom_factor > 1.05 && ` · zoom ${scene.zoom_factor.toFixed(1)}x`}
                 </div>
                 <div className="text-[10px] text-zinc-500 truncate">
                   {scene.clip_suggestion.description}
                 </div>
               </div>
-              {scene.captions.length > 0 && (
-                <Badge
-                  variant="outline"
-                  className="border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200 text-[10px]"
-                >
-                  caption
-                </Badge>
-              )}
+              {/* Effect badges */}
+              <div className="flex gap-1 flex-shrink-0">
+                {scene.effects.map((eff, ei) => (
+                  <Badge
+                    key={ei}
+                    variant="outline"
+                    className="border-amber-500/30 bg-amber-500/10 text-amber-200 text-[10px]"
+                  >
+                    {eff.type === "zoom_bump" ? "zoom" : eff.type === "slow_motion" ? "slow-mo" : eff.type}
+                  </Badge>
+                ))}
+                {scene.transition_in?.type && scene.transition_in.type !== "cut" && (
+                  <Badge
+                    variant="outline"
+                    className="border-rose-500/30 bg-rose-500/10 text-rose-200 text-[10px]"
+                  >
+                    {scene.transition_in.type === "flash" ? "⚡" : scene.transition_in.type === "whip_pan" ? "whip" : scene.transition_in.type}
+                  </Badge>
+                )}
+                {scene.captions.length > 0 && (
+                  <Badge
+                    variant="outline"
+                    className="border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-200 text-[10px]"
+                  >
+                    caption
+                  </Badge>
+                )}
+              </div>
             </div>
           ))}
         </div>

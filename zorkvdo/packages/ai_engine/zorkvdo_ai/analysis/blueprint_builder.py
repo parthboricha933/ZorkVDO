@@ -76,6 +76,40 @@ class BlueprintBuilder:
 
             shot_type = self._shot_type_for_scene(i, len(shots), objects)
             effects = self._effects_for_shot(i, shots, beat)
+
+            # Add zoom effects detected by the motion analyzer
+            for ze in motion.zoom_events:
+                ze_time = ze.get("time", 0)
+                if start <= ze_time <= end:
+                    if ze.get("direction") == "in":
+                        effects.append(Effect(
+                            type=EffectType.ZOOM_BUMP,
+                            intensity=min(1.0, ze.get("speed", 0.5)),
+                            duration=ze.get("duration", 0.5),
+                        ))
+                    elif ze.get("direction") == "out":
+                        effects.append(Effect(
+                            type=EffectType.ZOOM_BUMP,
+                            intensity=min(1.0, ze.get("speed", 0.5)),
+                            duration=ze.get("duration", 0.5),
+                        ))
+
+            # Use detected transition type for this scene boundary
+            transition_in = Transition()
+            if hasattr(scene, 'transitions') and scene.transitions:
+                # Find the transition closest to this scene's start time
+                for te in scene.transitions:
+                    if abs(te.timestamp - start) < 0.5:
+                        tt = TransitionType.CUT
+                        if te.transition_type == "flash":
+                            tt = TransitionType.FLASH
+                        elif te.transition_type == "whip_pan":
+                            tt = TransitionType.WHIP_PAN
+                        elif te.transition_type == "crossfade":
+                            tt = TransitionType.CROSS_DISSOLVE
+                        transition_in = Transition(type=tt, duration=0.2)
+                        break
+
             captions = self._captions_for_shot(caption, start, end)
 
             # Beat sync for this scene
@@ -94,7 +128,7 @@ class BlueprintBuilder:
                     camera_motion=cam_motion,
                     zoom_factor=zoom_factor,
                     effects=effects,
-                    transition_in=transitions[min(i, len(transitions) - 1)] if transitions else Transition(),
+                    transition_in=transition_in,
                     captions=captions,
                     clip_suggestion=self._suggestion_for_shot(
                         i, len(shots), cam_motion, shot_type, end - start, objects

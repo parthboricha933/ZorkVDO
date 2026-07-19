@@ -215,19 +215,45 @@ async def _trim_and_scale(
     bitrate_v: int,
     scene,
 ) -> None:
-    """Trim a clip to [start, start+duration] and scale to target dims."""
-    # Build filter chain that handles any source resolution:
-    # 1. Scale to fit within target dims (preserving aspect ratio)
-    # 2. Pad to exact target dims (centered, black bars)
-    # 3. Force sample aspect ratio = 1
-    zoom = scene.zoom_factor if scene.zoom_factor > 1.0 else 1.0
-    if zoom > 1.0:
-        # Apply zoom by upscaling first
+    """Trim a clip to [start, start+duration] and scale to target dims.
+
+    Applies detected effects:
+    - Zoom in/out: animated zoom via zoompan filter
+    - Flash transition: white frame at start
+    - Slow motion: if effect detected
+    """
+    # Check for zoom effects in the scene
+    has_zoom_in = any(e.type.value == "zoom_bump" for e in scene.effects if hasattr(e, 'type'))
+    zoom_factor = scene.zoom_factor if scene.zoom_factor > 1.0 else 1.0
+
+    # Check for flash transition
+    is_flash = scene.transition_in.type.value == "flash" if hasattr(scene.transition_in, 'type') else False
+
+    # Build filter chain
+    if has_zoom_in or zoom_factor > 1.05:
+        # Animated zoom in via zoompan
+        total_frames = int(duration * 30)
+        start_zoom = 1.0
+        end_zoom = zoom_factor if zoom_factor > 1.0 else 1.3
         filter_complex = (
-            f"scale={int(width * zoom)}:{int(height * zoom)}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},setsar=1"
+            f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=decrease,"
+            f"pad={width * 2}:{height * 2}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"zoompan=z='min(zoom+{(end_zoom - start_zoom) / max(total_frames, 1):.6f},{end_zoom})':"
+            f"d={total_frames}:s={width}x{height}:fps=30,setsar=1"
+        )
+    elif is_flash:
+        # Flash transition: white frame for 0.1s at start, then normal
+        flash_frames = 3  # ~0.1s at 30fps
+        filter_complex = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"format=yuv420p,"
+            f"geq=r='if(lt(n,{flash_frames}),255,r)':"
+            f"g='if(lt(n,{flash_frames}),255,g)':"
+            f"b='if(lt(n,{flash_frames}),255,b)',setsar=1"
         )
     else:
+        # Standard scale + pad
         filter_complex = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
