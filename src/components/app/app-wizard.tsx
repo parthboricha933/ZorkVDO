@@ -89,20 +89,23 @@ export function AppWizard() {
       setSourceVideo(video);
 
       setStep("analyzing");
+      // Analysis is sync (blocking) — goes directly to Railway, no Vercel timeout
       const job = await api.startAnalysis(
         video.id,
         `Blueprint from ${file.name}`,
-        false
+        true
       );
       setAnalysisJob(job);
 
-      const finished = await api.pollJob(job.id, (j) => setAnalysisJob(j));
-      if (finished.result?.blueprint_id) {
+      // Sync mode returns the completed job immediately
+      if (job.status === "succeeded" && job.result?.blueprint_id) {
         const bp = await api.getBlueprint(
-          finished.result.blueprint_id as string
+          job.result.blueprint_id as string
         );
         setBlueprint(bp);
         setStep("blueprint");
+      } else if (job.status === "failed") {
+        throw new Error(job.error || "Analysis failed");
       }
     } catch (e) {
       const msg =
@@ -148,10 +151,18 @@ export function AppWizard() {
   }, []);
 
   const handleRender = useCallback(async () => {
-    if (!project || !blueprint || userClips.length === 0) return;
+    if (!blueprint || userClips.length === 0) return;
     setError(null);
     setStep("rendering");
     try {
+      // Create a fresh project right before rendering (in-memory DB may
+      // have been wiped between steps on Railway)
+      const freshProject = await api.createProject(
+        `Render — ${blueprint.name}`,
+        "Auto-created for render"
+      );
+      setProject(freshProject);
+
       const clipMapping = blueprint.scenes.map((scene, i) => ({
         scene_index: scene.index,
         clip_id: userClips[i % userClips.length].id,
@@ -160,7 +171,7 @@ export function AppWizard() {
       }));
 
       const job = await api.startRender(
-        project.id,
+        freshProject.id,
         blueprint.id,
         clipMapping,
         "high",
@@ -168,13 +179,15 @@ export function AppWizard() {
       );
       setRenderJob(job);
 
-      const finished = await api.pollJob(job.id, (j) => setRenderJob(j));
-      if (finished.result?.output_video_id) {
+      // Render is sync (blocking) — the result comes back in the same request
+      if (job.status === "succeeded" && job.result?.output_video_id) {
         const out = await api.getVideo(
-          finished.result.output_video_id as string
+          job.result.output_video_id as string
         );
         setOutputVideo(out);
         setStep("done");
+      } else if (job.status === "failed") {
+        throw new Error(job.error || "Render failed");
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Render failed";
