@@ -27,19 +27,20 @@ log = get_logger(__name__)
 
 
 # Bitrate ladder (kbps) keyed by quality level
+# Reduced for Railway free tier memory constraints
 QUALITY_BITRATES: dict[str, dict[str, int]] = {
-    "low":    {"video_k": 1500, "audio_k": 96,  "scale": 540},
-    "medium": {"video_k": 3000, "audio_k": 128, "scale": 720},
-    "high":   {"video_k": 6000, "audio_k": 192, "scale": 1080},
+    "low":    {"video_k": 800,  "audio_k": 96,  "scale": 360},
+    "medium": {"video_k": 1500, "audio_k": 128, "scale": 540},
+    "high":   {"video_k": 2500, "audio_k": 128, "scale": 720},
 }
 
 
-# Aspect ratio → scale target
+# Aspect ratio → scale target (reduced for memory)
 ASPECT_RATIOS: dict[str, tuple[int, int]] = {
-    "9:16":  (1080, 1920),
-    "16:9":  (1920, 1080),
-    "1:1":   (1080, 1080),
-    "4:5":   (1080, 1350),
+    "9:16":  (720, 1280),
+    "16:9":  (1280, 720),
+    "1:1":   (720, 720),
+    "4:5":   (720, 900),
 }
 
 
@@ -173,11 +174,12 @@ async def _trim_and_scale(
         "-t", f"{duration:.3f}",
         "-vf", filter_complex,
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-b:v", f"{bitrate_v}k",
+        "-preset", "ultrafast",  # lowest memory usage
+        "-crf", "28",  # constant quality (higher = smaller file, lower quality)
         "-pix_fmt", "yuv420p",
         "-r", "30",
         "-an",
+        "-threads", "1",  # limit to 1 thread to reduce memory
         dst_path,
     ]
     log.info("ffmpeg_trim", cmd=" ".join(cmd), src_exists=os.path.exists(src_path), src_size=os.path.getsize(src_path) if os.path.exists(src_path) else 0)
@@ -200,18 +202,19 @@ async def _concat(
 ) -> None:
     """Concatenate segments and add a silent audio track."""
     cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
+        "ffmpeg", "-y", "-loglevel", "warning",
         "-f", "concat", "-safe", "0",
         "-i", concat_list_path,
         "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-b:v", f"{bitrate_v}k",
+        "-preset", "ultrafast",
+        "-crf", "28",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", f"{bitrate_a}k",
         "-shortest",
         "-movflags", "+faststart",
+        "-threads", "1",
         output_path,
     ]
     proc = await asyncio.create_subprocess_exec(
