@@ -242,15 +242,24 @@ export const api = {
     blueprintName: string,
     sync = false
   ) {
-    // Always use async mode (sync=false) — Vercel proxy has 10s timeout,
-    // but analysis takes 30-60s. The browser polls /jobs/{id} for status.
-    return request<JobPublic>(
-      `/jobs/analyze/${videoId}`,
-      {
+    // Analysis goes DIRECTLY to Railway (takes 30-60s, Vercel proxy has 10s timeout)
+    // Uses sync=true so the result is returned in the same request
+    const url = `${UPLOAD_URL}/jobs/analyze/${videoId}?sync=true`;
+    try {
+      const resp = await fetch(url, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ blueprint_name: blueprintName }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new ApiError(resp.status, `Analysis failed ${resp.status}`, text);
       }
-    );
+      return (await resp.json()) as JobPublic;
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      throw new ApiError(0, "Cannot reach backend for analysis", { url });
+    }
   },
 
   async startRender(
@@ -265,24 +274,49 @@ export const api = {
     quality = "high",
     aspectRatio: string | null = null
   ) {
-    return request<JobPublic>("/jobs/render", {
-      method: "POST",
-      body: JSON.stringify({
-        project_id: projectId,
-        blueprint_id: blueprintId,
-        clip_mapping: clipMapping,
-        quality,
-        aspect_ratio: aspectRatio,
-      }),
-    });
+    // Render goes DIRECTLY to Railway (takes 30-60s, Vercel proxy has 10s timeout)
+    const url = `${UPLOAD_URL}/jobs/render`;
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          blueprint_id: blueprintId,
+          clip_mapping: clipMapping,
+          quality,
+          aspect_ratio: aspectRatio,
+        }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new ApiError(resp.status, `Render failed ${resp.status}`, text);
+      }
+      return (await resp.json()) as JobPublic;
+    } catch (e) {
+      if (e instanceof ApiError) throw e;
+      throw new ApiError(0, "Cannot reach backend for render", { url });
+    }
   },
 
   async getJob(jobId: string) {
-    return request<JobPublic>(`/jobs/${jobId}`);
+    // Job status goes direct to Railway (needs to be fast for polling)
+    return fetch(`${UPLOAD_URL}/jobs/${jobId}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(new ApiError(r.status, `API ${r.status}`)))
+      .catch((e) => {
+        if (e instanceof ApiError) throw e;
+        throw new ApiError(0, "Cannot reach backend", { url: `${UPLOAD_URL}/jobs/${jobId}` });
+      }) as Promise<JobPublic>;
   },
 
   async getBlueprint(blueprintId: string) {
-    return request<BlueprintPublic>(`/blueprints/${blueprintId}`);
+    // Blueprint can be large — go direct to Railway
+    return fetch(`${UPLOAD_URL}/blueprints/${blueprintId}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(new ApiError(r.status, `API ${r.status}`)))
+      .catch((e) => {
+        if (e instanceof ApiError) throw e;
+        throw new ApiError(0, "Cannot reach backend", { url: `${UPLOAD_URL}/blueprints/${blueprintId}` });
+      }) as Promise<BlueprintPublic>;
   },
 
   async pollJob(
