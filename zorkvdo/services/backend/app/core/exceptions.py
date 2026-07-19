@@ -79,16 +79,19 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(_: Request, exc: Exception) -> JSONResponse:
-        # Don't leak internals — log the full traceback server-side.
         from app.core.logging import get_logger
         get_logger(__name__).exception("unhandled_error", error=str(exc))
+        import traceback
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
                     "code": "internal_error",
-                    "message": "An unexpected error occurred.",
-                    "details": {},
+                    "message": str(exc),
+                    "details": {
+                        "type": type(exc).__name__,
+                        "traceback": traceback.format_exc().split("\n")[-15:],
+                    },
                 }
             },
         )
