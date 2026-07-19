@@ -167,7 +167,7 @@ async def _trim_and_scale(
         )
 
     cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
+        "ffmpeg", "-y", "-loglevel", "warning",
         "-ss", f"{start:.3f}",
         "-i", src_path,
         "-t", f"{duration:.3f}",
@@ -177,18 +177,21 @@ async def _trim_and_scale(
         "-b:v", f"{bitrate_v}k",
         "-pix_fmt", "yuv420p",
         "-r", "30",
-        "-an",  # drop audio for segments — we'll mux music at the end
+        "-an",
         dst_path,
     ]
+    log.info("ffmpeg_trim", cmd=" ".join(cmd), src_exists=os.path.exists(src_path), src_size=os.path.getsize(src_path) if os.path.exists(src_path) else 0)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
+        err_msg = stderr.decode(errors='ignore')[:500] if stderr else "(no stderr)"
+        out_msg = stdout.decode(errors='ignore')[:200] if stdout else ""
         raise RuntimeError(
-            f"ffmpeg trim failed: {stderr.decode(errors='ignore')[:500]}"
+            f"ffmpeg trim failed (exit {proc.returncode}): stderr={err_msg} stdout={out_msg}"
         )
 
 
