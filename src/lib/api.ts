@@ -1,20 +1,23 @@
 /**
  * ZorkVDO API client.
  *
- * Uses a RELATIVE URL (/api/v1) so the browser talks to Vercel (same origin),
- * and Vercel's serverless function proxies to the Railway backend.
+ * Two-mode operation:
+ * - Small API calls (auth, projects, jobs, blueprints): go through the Vercel
+ *   proxy at /api/v1/* (avoids DNS + CORS issues)
+ * - File uploads: go DIRECTLY to the Railway backend (Vercel serverless
+ *   functions have a 4.5MB body limit that rejects video files)
  *
- * This avoids:
- * - DNS resolution issues (some ISPs can't resolve *.up.railway.app)
- * - CORS (same-origin requests don't need CORS headers)
- * - Exposing the backend URL to the browser
- *
+ * The Railway URL for uploads is set via NEXT_PUBLIC_UPLOAD_URL env var.
  * For local dev, set NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
  * to talk to the backend directly.
  */
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "/api/v1";
+// Proxy URL for small API calls (same-origin, no DNS/CORS issues)
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api/v1";
+
+// Direct Railway URL for file uploads (bypasses Vercel's 4.5MB limit)
+const UPLOAD_URL =
+  process.env.NEXT_PUBLIC_UPLOAD_URL || "https://zorkvdo-production.up.railway.app/api/v1";
 
 export interface VideoPublic {
   id: string;
@@ -203,7 +206,9 @@ export const api = {
     const form = new FormData();
     form.append("file", file);
     form.append("kind", kind);
-    const url = `${API_URL}/videos/upload`;
+    // Uploads go DIRECTLY to Railway — Vercel's serverless functions have
+    // a 4.5MB body limit that rejects video files.
+    const url = `${UPLOAD_URL}/videos/upload`;
     try {
       const resp = await fetch(url, {
         method: "POST",
@@ -216,7 +221,10 @@ export const api = {
       return (await resp.json()) as VideoPublic;
     } catch (e) {
       if (e instanceof ApiError) throw e;
-      throw new ApiError(0, "Cannot reach backend for upload", { url });
+      throw new ApiError(0, "Cannot reach backend for upload", {
+        url,
+        hint: "If you see a DNS error, your network may not be able to reach Railway. Try a different network or VPN.",
+      });
     }
   },
 
@@ -311,7 +319,8 @@ export const api = {
   },
 
   downloadUrl(videoId: string) {
-    return `${API_URL}/videos/${videoId}/download`;
+    // Downloads go directly to Railway (video files are too large for Vercel proxy)
+    return `${UPLOAD_URL}/videos/${videoId}/download`;
   },
 };
 
