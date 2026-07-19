@@ -18,11 +18,17 @@ from app.core.config import get_settings
 from app.core.logging import bind_task, configure_logging, get_logger
 from app.db import build_repositories
 from app.storage import build_storage
-from app.workers.celery_app import _run_async, celery_app
 from zorkvdo_ai import VideoAnalyzer
 from zorkvdo_ai.analysis import AnalyzerConfig
 
 log = get_logger(__name__)
+
+# Lazy import celery_app + _run_async — only needed when dispatching
+# async Celery tasks. The inline task variants (used by the API in dev
+# mode) don't need celery at all.
+def _get_celery():
+    from app.workers.celery_app import celery_app, _run_async
+    return celery_app, _run_async
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -175,9 +181,16 @@ async def _run_analysis_impl(
         raise
 
 
-@celery_app.task(name="zorkvdo.run_analysis", bind=True)
-def run_analysis_task(self, job_id: str, video_id: str, owner_id: str, blueprint_name: str) -> dict:
+def run_analysis_task(job_id: str, video_id: str, owner_id: str, blueprint_name: str) -> dict:
+    """Celery task wrapper — only registered if celery is installed."""
+    celery_app, _run_async = _get_celery()
     return _run_async(run_analysis_job(job_id, video_id, owner_id, blueprint_name))
+
+
+def _register_celery_tasks():
+    """Register tasks with celery. Called lazily only when celery is needed."""
+    celery_app, _ = _get_celery()
+    celery_app.task(name="zorkvdo.run_analysis", bind=True)(run_analysis_task)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -252,10 +265,8 @@ async def run_match_clips_job(
         raise
 
 
-@celery_app.task(name="zorkvdo.run_match_clips", bind=True)
-def run_match_clips_task(
-    self, job_id: str, blueprint_id: str, owner_id: str, clip_ids: list[str]
-) -> dict:
+def run_match_clips_task(job_id: str, blueprint_id: str, owner_id: str, clip_ids: list[str]) -> dict:
+    celery_app, _run_async = _get_celery()
     return _run_async(run_match_clips_job(job_id, blueprint_id, owner_id, clip_ids))
 
 
@@ -423,9 +434,7 @@ async def _run_render_impl(
         raise
 
 
-@celery_app.task(name="zorkvdo.run_render", bind=True)
 def run_render_task(
-    self,
     job_id: str,
     project_id: str,
     owner_id: str,
@@ -434,6 +443,7 @@ def run_render_task(
     quality: str = "high",
     aspect_ratio: str | None = None,
 ) -> dict:
+    celery_app, _run_async = _get_celery()
     return _run_async(
         run_render_job(
             job_id, project_id, owner_id, blueprint_id, clip_mapping, quality, aspect_ratio
