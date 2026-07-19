@@ -206,24 +206,39 @@ export const api = {
     const form = new FormData();
     form.append("file", file);
     form.append("kind", kind);
-    // Uploads go DIRECTLY to Railway — Vercel's serverless functions have
-    // a 4.5MB body limit that rejects video files.
-    const url = `${UPLOAD_URL}/videos/upload`;
+
+    // Try direct Railway first, fall back to Vercel proxy for small files
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(`${UPLOAD_URL}/videos/upload`, {
         method: "POST",
         body: form,
+        signal: AbortSignal.timeout(120000),
       });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        throw new ApiError(resp.status, `Upload failed ${resp.status}`, text);
-      }
-      return (await resp.json()) as VideoPublic;
+      if (resp.ok) return (await resp.json()) as VideoPublic;
+      const text = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `Upload failed ${resp.status}`, text);
+    } catch (directErr) {
+      if (directErr instanceof ApiError && directErr.status !== 0) throw directErr;
+      // Network error — try via Vercel proxy (only works for files < 4.5MB)
+    }
+
+    // Fallback: Vercel proxy (may fail for large files)
+    try {
+      const form2 = new FormData();
+      form2.append("file", file);
+      form2.append("kind", kind);
+      const resp = await fetch(`${API_URL}/videos/upload`, {
+        method: "POST",
+        body: form2,
+        signal: AbortSignal.timeout(120000),
+      });
+      if (resp.ok) return (await resp.json()) as VideoPublic;
+      const text = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `Upload failed ${resp.status}`, text);
     } catch (e) {
       if (e instanceof ApiError) throw e;
       throw new ApiError(0, "Cannot reach backend for upload", {
-        url,
-        hint: "If you see a DNS error, your network may not be able to reach Railway. Try a different network or VPN.",
+        hint: "Your network may not be able to reach Railway. Try a different network or VPN.",
       });
     }
   },
@@ -234,6 +249,11 @@ export const api = {
   },
 
   async getVideo(videoId: string) {
+    // Try direct, fall back to proxy
+    try {
+      const r = await fetch(`${UPLOAD_URL}/videos/${videoId}`);
+      if (r.ok) return await r.json() as VideoPublic;
+    } catch {}
     return request<VideoPublic>(`/videos/${videoId}`);
   },
 
@@ -242,23 +262,39 @@ export const api = {
     blueprintName: string,
     sync = false
   ) {
-    // Analysis goes DIRECTLY to Railway (takes 30-60s, Vercel proxy has 10s timeout)
-    // Uses sync=true so the result is returned in the same request
-    const url = `${UPLOAD_URL}/jobs/analyze/${videoId}?sync=true`;
+    const body = JSON.stringify({ blueprint_name: blueprintName });
+
+    // Try direct Railway first
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(`${UPLOAD_URL}/jobs/analyze/${videoId}?sync=true`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blueprint_name: blueprintName }),
+        body,
+        signal: AbortSignal.timeout(180000), // 3 min for analysis
       });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        throw new ApiError(resp.status, `Analysis failed ${resp.status}`, text);
-      }
-      return (await resp.json()) as JobPublic;
+      if (resp.ok) return (await resp.json()) as JobPublic;
+      const text = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `Analysis failed ${resp.status}`, text);
+    } catch (directErr) {
+      if (directErr instanceof ApiError && directErr.status !== 0) throw directErr;
+    }
+
+    // Fallback: Vercel proxy (may timeout for long analysis)
+    try {
+      const resp = await fetch(`${API_URL}/jobs/analyze/${videoId}?sync=true`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(180000),
+      });
+      if (resp.ok) return (await resp.json()) as JobPublic;
+      const text = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `Analysis failed ${resp.status}`, text);
     } catch (e) {
       if (e instanceof ApiError) throw e;
-      throw new ApiError(0, "Cannot reach backend for analysis", { url });
+      throw new ApiError(0, "Cannot reach backend for analysis", {
+        hint: "Your network may not be able to reach Railway.",
+      });
     }
   },
 
@@ -274,49 +310,71 @@ export const api = {
     quality = "high",
     aspectRatio: string | null = null
   ) {
-    // Render goes DIRECTLY to Railway (takes 30-60s, Vercel proxy has 10s timeout)
-    const url = `${UPLOAD_URL}/jobs/render`;
+    // Try direct Railway first, fall back to Vercel proxy
+    const body = JSON.stringify({
+      project_id: projectId,
+      blueprint_id: blueprintId,
+      clip_mapping: clipMapping,
+      quality,
+      aspect_ratio: aspectRatio,
+    });
+
+    // Attempt 1: Direct to Railway (fast, no proxy overhead)
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(`${UPLOAD_URL}/jobs/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project_id: projectId,
-          blueprint_id: blueprintId,
-          clip_mapping: clipMapping,
-          quality,
-          aspect_ratio: aspectRatio,
-        }),
+        body,
+        signal: AbortSignal.timeout(120000), // 2 min timeout
       });
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        throw new ApiError(resp.status, `Render failed ${resp.status}`, text);
+      if (resp.ok) return (await resp.json()) as JobPublic;
+      const text = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `Render failed ${resp.status}`, text);
+    } catch (directErr) {
+      // If it's a non-network error (like 404), don't retry via proxy
+      if (directErr instanceof ApiError && directErr.status !== 0) {
+        throw directErr;
       }
-      return (await resp.json()) as JobPublic;
-    } catch (e) {
-      if (e instanceof ApiError) throw e;
-      throw new ApiError(0, "Cannot reach backend for render", { url });
+      // Network error — try via Vercel proxy as fallback
+    }
+
+    // Attempt 2: Via Vercel proxy (handles DNS issues, but has 10s timeout)
+    try {
+      const resp = await fetch(`${API_URL}/jobs/render`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(120000),
+      });
+      if (resp.ok) return (await resp.json()) as JobPublic;
+      const text = await resp.text().catch(() => "");
+      throw new ApiError(resp.status, `Render failed ${resp.status}`, text);
+    } catch (proxyErr) {
+      if (proxyErr instanceof ApiError) throw proxyErr;
+      throw new ApiError(0, "Cannot reach backend for render (tried direct + proxy)", {
+        hint: "Your network may not be able to reach Railway. Try a different network or VPN.",
+      });
     }
   },
 
   async getJob(jobId: string) {
-    // Job status goes direct to Railway (needs to be fast for polling)
-    return fetch(`${UPLOAD_URL}/jobs/${jobId}`)
-      .then((r) => r.ok ? r.json() : Promise.reject(new ApiError(r.status, `API ${r.status}`)))
-      .catch((e) => {
-        if (e instanceof ApiError) throw e;
-        throw new ApiError(0, "Cannot reach backend", { url: `${UPLOAD_URL}/jobs/${jobId}` });
-      }) as Promise<JobPublic>;
+    // Try direct, fall back to proxy
+    try {
+      const r = await fetch(`${UPLOAD_URL}/jobs/${jobId}`);
+      if (r.ok) return await r.json() as JobPublic;
+    } catch {}
+    // Fallback: proxy
+    return request<JobPublic>(`/jobs/${jobId}`);
   },
 
   async getBlueprint(blueprintId: string) {
-    // Blueprint can be large — go direct to Railway
-    return fetch(`${UPLOAD_URL}/blueprints/${blueprintId}`)
-      .then((r) => r.ok ? r.json() : Promise.reject(new ApiError(r.status, `API ${r.status}`)))
-      .catch((e) => {
-        if (e instanceof ApiError) throw e;
-        throw new ApiError(0, "Cannot reach backend", { url: `${UPLOAD_URL}/blueprints/${blueprintId}` });
-      }) as Promise<BlueprintPublic>;
+    // Try direct, fall back to proxy
+    try {
+      const r = await fetch(`${UPLOAD_URL}/blueprints/${blueprintId}`);
+      if (r.ok) return await r.json() as BlueprintPublic;
+    } catch {}
+    // Fallback: proxy
+    return request<BlueprintPublic>(`/blueprints/${blueprintId}`);
   },
 
   async pollJob(
