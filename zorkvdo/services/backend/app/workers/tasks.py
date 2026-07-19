@@ -349,10 +349,9 @@ async def _run_render_impl(
         # Extract audio from the SOURCE video (for song reuse)
         source_audio_path = None
         source_video_id = blueprint.meta.source_video_id
+        videos_repo = repos.get("videos")
         if source_video_id:
-            source_doc = await clips_repo.get(source_video_id) if hasattr(clips_repo, 'get') else None
-            # Actually, source video is in the same videos collection
-            source_doc = await repos.get("videos").get(source_video_id)
+            source_doc = await videos_repo.get(source_video_id)
             if source_doc:
                 try:
                     src_data = await storage.get(source_doc["storage_key"])
@@ -387,7 +386,7 @@ async def _run_render_impl(
         clip_paths: dict[str, str] = {}  # clip_id → local path
         for mapping in clip_mapping:
             cid = mapping["clip_id"]
-            doc = await clips_repo.get(cid)
+            doc = await videos_repo.get(cid)
             if not doc:
                 continue
             data = await storage.get(doc["storage_key"])
