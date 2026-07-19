@@ -56,12 +56,17 @@ class ObjectDetector:
 
     def _get_face_cascade(self) -> Any:
         if self._face_cascade is None:
-            # cv2.data haarcascades ship with opencv-python-headless
-            cascade_path = os.path.join(
-                cv2.data.haarcascades, "haarcascade_frontalface_default.xml"
-            )
-            self._face_cascade = cv2.CascadeClassifier(cascade_path)
-        return self._face_cascade
+            try:
+                # cv2.data haarcascades ship with opencv-python (not -headless)
+                cascade_path = os.path.join(
+                    cv2.data.haarcascades, "haarcascade_frontalface_default.xml"
+                )
+                self._face_cascade = cv2.CascadeClassifier(cascade_path)
+            except (AttributeError, Exception):
+                # CascadeClassifier not available in opencv-python-headless
+                # Fall back to None — face detection will be skipped
+                self._face_cascade = False
+        return self._face_cascade if self._face_cascade is not False else None
 
     def _get_pose(self) -> Any | None:
         if not self.enable_pose:
