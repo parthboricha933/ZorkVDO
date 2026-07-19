@@ -108,31 +108,16 @@ class AnalysisService:
                 },
             )
         except Exception as e:
-            log.warning("celery_unavailable_using_background", error=str(e))
-            # No Celery — run in a background asyncio task so the API
-            # returns immediately. The browser polls /jobs/{id} for status.
-            import asyncio
+            log.warning("celery_unavailable_running_inline", error=str(e))
+            # No Celery — run inline (blocking). The wizard calls Railway
+            # directly (no Vercel proxy), so there's no timeout issue.
             from app.workers.tasks import run_analysis_job_inline
+            await run_analysis_job_inline(
+                job_id, video_id, owner_id, blueprint_name,
+                repos=self.repos,
+                storage=self.storage,
+            )
 
-            async def _run_bg():
-                try:
-                    await run_analysis_job_inline(
-                        job_id, video_id, owner_id, blueprint_name,
-                        repos=self.repos, storage=self.storage,
-                    )
-                except Exception as bg_exc:
-                    log.exception("bg_analysis_failed", job_id=job_id, error=str(bg_exc))
-                    from datetime import datetime, timezone
-                    jd = await self.repos.get("jobs").get(job_id)
-                    if jd:
-                        jd["status"] = "failed"
-                        jd["error"] = str(bg_exc)
-                        jd["finished_at"] = datetime.now(timezone.utc).isoformat()
-                        await self.repos.get("jobs").put(job_id, jd)
-
-            asyncio.ensure_future(_run_bg())
-
-        # Return immediately with the queued job
         doc = await self.repos.get("jobs").get(job_id)
         if doc is None:
             raise NotFoundError("job not found")
