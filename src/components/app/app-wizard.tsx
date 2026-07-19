@@ -116,11 +116,20 @@ export function AppWizard() {
     }
   }, []);
 
+  const [clipUploadProgress, setClipUploadProgress] = useState<{
+    current: number;
+    total: number;
+    fileName: string;
+  } | null>(null);
+
   const handleUploadClips = useCallback(async (files: File[]) => {
     setError(null);
+    setClipUploadProgress({ current: 0, total: files.length, fileName: files[0]?.name || "" });
     try {
       const uploaded: VideoPublic[] = [];
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setClipUploadProgress({ current: i + 1, total: files.length, fileName: file.name });
         const video = await api.uploadVideo(file, "user_clip");
         uploaded.push(video);
       }
@@ -133,6 +142,8 @@ export function AppWizard() {
           ? e.message
           : "Upload failed";
       setError(msg);
+    } finally {
+      setClipUploadProgress(null);
     }
   }, []);
 
@@ -311,6 +322,7 @@ export function AppWizard() {
                 userClips={userClips}
                 onUploadClips={handleUploadClips}
                 onRender={handleRender}
+                clipUploadProgress={clipUploadProgress}
               />
             )}
             {step === "rendering" && <RenderingStep job={renderJob} />}
@@ -506,19 +518,31 @@ function BlueprintStep({
   userClips,
   onUploadClips,
   onRender,
+  clipUploadProgress,
 }: {
   blueprint: BlueprintPublic;
   userClips: VideoPublic[];
   onUploadClips: (files: File[]) => void;
   onRender: () => void;
+  clipUploadProgress: { current: number; total: number; fileName: string } | null;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   const handleFiles = (files: FileList | null) => {
-    if (!files) return;
-    const valid = Array.from(files).filter((f) => f.type.startsWith("video/"));
-    if (valid.length > 0) onUploadClips(valid);
+    if (!files || files.length === 0) return;
+    // Accept files that are either:
+    // 1. Typed as video/* by the browser, OR
+    // 2. Have a video file extension (some browsers/OSes report empty type)
+    const videoExtensions = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
+    const valid = Array.from(files).filter((f) => {
+      if (f.type.startsWith("video/")) return true;
+      const name = f.name.toLowerCase();
+      return videoExtensions.some((ext) => name.endsWith(ext));
+    });
+    if (valid.length > 0) {
+      onUploadClips(valid);
+    }
   };
 
   return (
@@ -638,15 +662,31 @@ function BlueprintStep({
           <input
             ref={inputRef}
             type="file"
-            accept="video/*"
+            accept="video/*,.mp4,.mov,.webm,.mkv,.avi,.m4v"
             multiple
             className="hidden"
-            onChange={(e) => handleFiles(e.target.files)}
+            onChange={(e) => {
+              handleFiles(e.target.files);
+              // Reset input so the same file can be selected again
+              e.target.value = "";
+            }}
           />
-          <Upload className="h-6 w-6 text-zinc-400 mx-auto mb-2" />
-          <p className="text-sm text-zinc-300">
-            Drop clips here or click to browse (multiple OK)
-          </p>
+          {clipUploadProgress ? (
+            <div className="flex flex-col items-center gap-2">
+              <Loader2 className="h-6 w-6 text-fuchsia-400 animate-spin" />
+              <p className="text-sm text-zinc-300">
+                Uploading {clipUploadProgress.current}/{clipUploadProgress.total}:{" "}
+                <span className="text-zinc-400">{clipUploadProgress.fileName}</span>
+              </p>
+            </div>
+          ) : (
+            <>
+              <Upload className="h-6 w-6 text-zinc-400 mx-auto mb-2" />
+              <p className="text-sm text-zinc-300">
+                Drop clips here or click to browse (multiple OK)
+              </p>
+            </>
+          )}
         </div>
 
         {userClips.length > 0 && (
