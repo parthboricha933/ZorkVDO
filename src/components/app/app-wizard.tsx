@@ -92,7 +92,7 @@ export function AppWizard() {
       const job = await api.startAnalysis(
         video.id,
         `Blueprint from ${file.name}`,
-        true
+        false
       );
       setAnalysisJob(job);
 

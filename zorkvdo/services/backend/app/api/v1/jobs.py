@@ -138,18 +138,34 @@ async def start_render(
             },
         )
     except Exception as e:
-        log.warning("celery_unavailable_running_inline", error=str(e))
-        # Run inline (dev/test only — blocks the request) using the SAME
-        # repos + storage so results are visible to the API immediately
+        log.warning("celery_unavailable_using_background", error=str(e))
+        # No Celery — run in background so the API returns immediately
+        import asyncio
         from app.api.deps import _storage_cache
         from app.workers.tasks import run_render_job_inline
-        await run_render_job_inline(
-            job_id, req.project_id, user_id, req.blueprint_id,
-            [m.model_dump() if hasattr(m, "model_dump") else m for m in req.clip_mapping],
-            req.quality, req.aspect_ratio,
-            repos=repos.registry,
-            storage=_storage_cache,
-        )
+
+        clip_mapping_list = [m.model_dump() if hasattr(m, "model_dump") else m for m in req.clip_mapping]
+
+        async def _run_bg():
+            try:
+                await run_render_job_inline(
+                    job_id, req.project_id, user_id, req.blueprint_id,
+                    clip_mapping_list,
+                    req.quality, req.aspect_ratio,
+                    repos=repos.registry,
+                    storage=_storage_cache,
+                )
+            except Exception as bg_exc:
+                log.exception("bg_render_failed", job_id=job_id, error=str(bg_exc))
+                from datetime import datetime, timezone
+                jd = await repos.get("jobs").get(job_id)
+                if jd:
+                    jd["status"] = "failed"
+                    jd["error"] = str(bg_exc)
+                    jd["finished_at"] = datetime.now(timezone.utc).isoformat()
+                    await repos.get("jobs").put(job_id, jd)
+
+        asyncio.ensure_future(_run_bg())
 
     doc = await repos.get("jobs").get(job_id)
     if doc is None:

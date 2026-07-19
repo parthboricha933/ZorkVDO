@@ -1,13 +1,20 @@
 /**
  * ZorkVDO API client.
  *
- * Calls the FastAPI backend at NEXT_PUBLIC_API_URL (defaults to
- * http://localhost:8000/api/v1 for local dev). In demo mode the backend
- * accepts requests without authentication.
+ * Uses a RELATIVE URL (/api/v1) so the browser talks to Vercel (same origin),
+ * and Vercel's serverless function proxies to the Railway backend.
+ *
+ * This avoids:
+ * - DNS resolution issues (some ISPs can't resolve *.up.railway.app)
+ * - CORS (same-origin requests don't need CORS headers)
+ * - Exposing the backend URL to the browser
+ *
+ * For local dev, set NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+ * to talk to the backend directly.
  */
 
 const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+  process.env.NEXT_PUBLIC_API_URL || "/api/v1";
 
 export interface VideoPublic {
   id: string;
@@ -227,8 +234,10 @@ export const api = {
     blueprintName: string,
     sync = false
   ) {
+    // Always use async mode (sync=false) — Vercel proxy has 10s timeout,
+    // but analysis takes 30-60s. The browser polls /jobs/{id} for status.
     return request<JobPublic>(
-      `/jobs/analyze/${videoId}?sync=${sync}`,
+      `/jobs/analyze/${videoId}`,
       {
         method: "POST",
         body: JSON.stringify({ blueprint_name: blueprintName }),
