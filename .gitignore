@@ -108,3 +108,6 @@ Caddyfile
 Thumbs.db
 .vercel
 .env*
+
+# Deployment scripts (contain secrets when run locally)
+scripts/
