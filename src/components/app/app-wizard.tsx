@@ -51,12 +51,27 @@ export function AppWizard() {
     "unknown" | "online" | "offline"
   >("unknown");
 
-  // Check backend on mount
+  // Check backend on mount — retries 3 times before showing "offline"
   useEffect(() => {
-    api
-      .health()
-      .then(() => setBackendStatus("online"))
-      .catch(() => setBackendStatus("offline"));
+    let cancelled = false;
+    const checkHealth = async (attempt: number) => {
+      try {
+        await api.health();
+        if (!cancelled) setBackendStatus("online");
+      } catch (e) {
+        if (cancelled) return;
+        if (attempt < 3) {
+          // Retry after 2s
+          setTimeout(() => checkHealth(attempt + 1), 2000);
+        } else {
+          setBackendStatus("offline");
+        }
+      }
+    };
+    checkHealth(0);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const stepIndex = STEPS.findIndex((s) => s.id === step);
@@ -191,17 +206,27 @@ export function AppWizard() {
           <div className="mb-6 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <div>
-                <p className="font-medium">Backend offline</p>
+              <div className="flex-1">
+                <p className="font-medium">Backend is taking longer than usual to respond</p>
                 <p className="text-xs text-amber-200/80 mt-1">
-                  The FastAPI backend at{" "}
-                  <code className="font-mono">{api.url}</code> isn't reachable.
-                  Start it locally with:{" "}
-                  <code className="font-mono">
-                    cd zorkvdo/services/backend && python -m uvicorn
-                    app.main:app --port 8000
-                  </code>
+                  The backend at <code className="font-mono break-all">{api.url}</code> might be
+                  cold-starting on Railway (free tier spins down after inactivity).
+                  The first request can take 30-60s. Try again in a moment.
                 </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-3 border-amber-500/30 text-amber-200 hover:bg-amber-500/20"
+                  onClick={() => {
+                    setBackendStatus("unknown");
+                    api.health()
+                      .then(() => setBackendStatus("online"))
+                      .catch(() => setBackendStatus("offline"));
+                  }}
+                >
+                  <RefreshCw className="mr-1.5 h-3 w-3" />
+                  Retry connection
+                </Button>
               </div>
             </div>
           </div>

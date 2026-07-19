@@ -112,14 +112,27 @@ async function request<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${API_URL}${path}`;
+
+  // Timeout helper — aborts the fetch after `timeoutMs`
+  const timeoutMs = (options.signal ? 120000 : 15000); // 15s default, 2min for uploads
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  // If caller provided their own signal, we respect it too
+  if (options.signal) {
+    options.signal.addEventListener("abort", () => controller.abort());
+  }
+
   try {
     const resp = await fetch(url, {
       ...options,
+      signal: controller.signal,
       headers: {
         ...(options.body ? { "Content-Type": "application/json" } : {}),
         ...options.headers,
       },
     });
+    clearTimeout(timeoutId);
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
       let details: unknown;
@@ -132,11 +145,15 @@ async function request<T>(
     }
     if (resp.status === 204) return undefined as T;
     return (await resp.json()) as T;
-  } catch (e) {
+  } catch (e: unknown) {
+    clearTimeout(timeoutId);
     if (e instanceof ApiError) throw e;
-    // Network error (backend unreachable)
-    throw new ApiError(0, "Cannot reach backend", {
-      hint: "Make sure the FastAPI backend is running",
+    // Network error or timeout
+    const isTimeout = e instanceof Error && e.name === "AbortError";
+    throw new ApiError(0, isTimeout ? "Request timed out" : "Cannot reach backend", {
+      hint: isTimeout
+        ? "Backend is slow to respond. It may be cold-starting on Railway."
+        : "Make sure the FastAPI backend is running",
       url,
     });
   }
@@ -146,7 +163,17 @@ export const api = {
   url: API_URL,
 
   async health() {
-    return request<{ status: string }>("/health");
+    // Retry up to 3 times with 2s delay — handles Railway cold starts
+    let lastError: unknown;
+    for (let i = 0; i < 3; i++) {
+      try {
+        return await request<{ status: string }>("/health");
+      } catch (e) {
+        lastError = e;
+        if (i < 2) await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    throw lastError;
   },
 
   async getMe() {
